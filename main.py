@@ -1,9 +1,18 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from providers import get_llm_provider
 from database import save_gap_analysis
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 llm = get_llm_provider()
 
 COST_PER_MILLION_INPUT_TOKENS = 0.25
