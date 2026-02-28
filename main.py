@@ -526,3 +526,45 @@ def analyse_all(engagement_id: str):
             print(f"Analysis failed for {req_id}: {e}")
 
     return {"processed": len(results), "results": results}
+
+
+# ── Process Mirror ────────────────────────────────────────────────────────────
+
+@app.get("/engagement/{engagement_id}/process-mirror")
+def get_process_mirror(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    tag_counts: dict = {}
+    for req in requirements:
+        for tag in (req.get("tags") or []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    by_tag: dict = {}
+    untagged = []
+    for req in requirements:
+        tags = req.get("tags") or []
+        entry = {
+            "req_id": req["req_id"],
+            "title": req.get("title"),
+            "description": req.get("description"),
+            "stakeholder": req.get("stakeholder"),
+        }
+        if not tags:
+            untagged.append(entry)
+        else:
+            for tag in tags:
+                by_tag.setdefault(tag, []).append(entry)
+
+    return {
+        "engagement_id": engagement_id,
+        "generated_at": datetime.utcnow().isoformat(),
+        "summary": {
+            "total_requirements": len(requirements),
+            "by_tag": tag_counts,
+        },
+        "by_tag": by_tag,
+        "untagged": untagged,
+    }
