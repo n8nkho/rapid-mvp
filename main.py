@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Import providers and database
 from providers import get_provider
@@ -118,6 +118,10 @@ class ArchaeologistSessionRequest(BaseModel):
     business_process: str
     message: str
     session_history: Optional[List[Dict]] = []
+
+class SignOffRequest(BaseModel):
+    level: str      # "sme" or "owner"
+    signed_by: str
 
 class RequirementResponse(BaseModel):
     req_id: str
@@ -499,6 +503,46 @@ def patch_requirement(req_id: str, engagement_id: str, body: RequirementUpdate):
     return req
 
 
+@app.post("/requirements/{req_id}/sign-off", response_model=RequirementResponse)
+def sign_off_requirement(req_id: str, engagement_id: str, body: SignOffRequest):
+    """Sign-off state machine:
+      level=sme   → sme_approved
+      level=owner, current=sme_approved → confirmed
+      level=owner, otherwise            → owner_approved
+    """
+    if body.level not in ("sme", "owner"):
+        raise HTTPException(status_code=400, detail="level must be 'sme' or 'owner'")
+
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    current_status = req.get("sign_off_status", "draft")
+    if body.level == "sme":
+        new_status = "sme_approved"
+    elif current_status == "sme_approved":
+        new_status = "confirmed"
+    else:
+        new_status = "owner_approved"
+
+    now = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "sign_off_status": new_status,
+        "sign_off_by": body.signed_by,
+        "sign_off_at": now,
+    }
+    try:
+        updated = update_requirement(req_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+    return updated
+
+
 # ── Gap Analysis ──────────────────────────────────────────────────────────────
 
 @app.post("/gap-analysis", response_model=GapAnalysisResponse)
@@ -745,4 +789,32 @@ def get_process_mirror(engagement_id: str):
         },
         "by_tag": by_tag,
         "untagged": untagged,
+    }
+
+
+# ── Sign-off Status ────────────────────────────────────────────────────────────
+
+@app.get("/engagement/{engagement_id}/sign-off-status")
+def get_sign_off_status(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    counts: dict = {"draft": 0, "sme_approved": 0, "owner_approved": 0, "confirmed": 0}
+    by_process: dict = {}
+
+    for req in requirements:
+        status = req.get("sign_off_status") or "draft"
+        counts[status] = counts.get(status, 0) + 1
+
+        process = req.get("business_process") or "Unclassified"
+        by_process.setdefault(process, {"draft": 0, "sme_approved": 0, "owner_approved": 0, "confirmed": 0})
+        by_process[process][status] = by_process[process].get(status, 0) + 1
+
+    return {
+        "engagement_id": engagement_id,
+        "total": len(requirements),
+        **counts,
+        "by_process": by_process,
     }
