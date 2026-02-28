@@ -70,24 +70,38 @@ def create_requirement(
     engagement_id: str,
     title: str,
     description: str,
-    source_type: str = None,
-    tags: list = None,
-    stakeholder: str = None,
-    raw_input: str = None,
+    **kwargs,
 ) -> dict:
+    """Create a requirement record.
+
+    SQL migration — run once in Supabase SQL editor to add Phase 1 columns:
+        ALTER TABLE requirements
+          ADD COLUMN IF NOT EXISTS business_process text,
+          ADD COLUMN IF NOT EXISTS priority text DEFAULT 'Must-Have',
+          ADD COLUMN IF NOT EXISTS category text,
+          ADD COLUMN IF NOT EXISTS kpi_impact jsonb,
+          ADD COLUMN IF NOT EXISTS confidence_score float DEFAULT 0.8,
+          ADD COLUMN IF NOT EXISTS current_state_ref text,
+          ADD COLUMN IF NOT EXISTS actors jsonb,
+          ADD COLUMN IF NOT EXISTS shadow_tools text[],
+          ADD COLUMN IF NOT EXISTS sign_off_status text DEFAULT 'draft',
+          ADD COLUMN IF NOT EXISTS sign_off_by text,
+          ADD COLUMN IF NOT EXISTS sign_off_at timestamptz,
+          ADD COLUMN IF NOT EXISTS sap_mapping_id text,
+          ADD COLUMN IF NOT EXISTS fit_assessment text;
+    """
     req_id = _next_req_id(engagement_id)
     record = {
         "req_id": req_id,
         "engagement_id": engagement_id,
         "title": title,
         "description": description,
-        "source_type": source_type,
-        "tags": tags or [],
-        "stakeholder": stakeholder,
-        "raw_input": raw_input,
         "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "tags": kwargs.pop("tags", None) or [],
     }
+    # Merge remaining kwargs; skip None values so Supabase uses column defaults
+    record.update({k: v for k, v in kwargs.items() if v is not None})
     response = supabase.table("requirements").insert(record).execute()
     return response.data[0] if response.data else {}
 

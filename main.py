@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 import os
 import re
@@ -70,6 +70,20 @@ class RequirementCreate(BaseModel):
     tags: Optional[List[str]] = []
     stakeholder: Optional[str] = None
     raw_input: Optional[str] = None
+    # Phase 1 extended fields
+    business_process: Optional[str] = None         # e.g. Procure-to-Pay, Order-to-Cash
+    priority: Optional[str] = "Must-Have"          # Must-Have / Should-Have / Nice-to-Have
+    category: Optional[str] = None                 # Automation / Control/Compliance / Reporting / Integration / UX / Data Migration
+    kpi_impact: Optional[Dict] = None              # {"metric": "...", "target": "...", "unit": "..."}
+    confidence_score: Optional[float] = 0.8
+    current_state_ref: Optional[str] = None        # quote, file name, video timestamp
+    actors: Optional[List[Dict]] = None            # [{"role": "AP Clerk", "type": "formal"}, ...]
+    shadow_tools: Optional[List[str]] = None       # ["Excel macro", "WhatsApp group", ...]
+    sign_off_status: Optional[str] = "draft"       # draft / sme_approved / owner_approved / confirmed
+    sign_off_by: Optional[str] = None
+    sign_off_at: Optional[str] = None
+    sap_mapping_id: Optional[str] = None           # nearest scope item ID
+    fit_assessment: Optional[str] = None           # Fit-to-Standard / Soft-Gap / Hard-Gap
 
 class RequirementUpdate(BaseModel):
     status: Optional[str] = None
@@ -77,6 +91,20 @@ class RequirementUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     stakeholder: Optional[str] = None
+    # Phase 1 extended fields
+    business_process: Optional[str] = None
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    kpi_impact: Optional[Dict] = None
+    confidence_score: Optional[float] = None
+    current_state_ref: Optional[str] = None
+    actors: Optional[List[Dict]] = None
+    shadow_tools: Optional[List[str]] = None
+    sign_off_status: Optional[str] = None
+    sign_off_by: Optional[str] = None
+    sign_off_at: Optional[str] = None
+    sap_mapping_id: Optional[str] = None
+    fit_assessment: Optional[str] = None
 
 class TranscriptExtractRequest(BaseModel):
     engagement_id: str
@@ -94,6 +122,20 @@ class RequirementResponse(BaseModel):
     raw_input: Optional[str] = None
     status: str
     created_at: Optional[str] = None
+    # Phase 1 extended fields
+    business_process: Optional[str] = None
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    kpi_impact: Optional[Any] = None
+    confidence_score: Optional[float] = None
+    current_state_ref: Optional[str] = None
+    actors: Optional[Any] = None
+    shadow_tools: Optional[List[str]] = None
+    sign_off_status: Optional[str] = None
+    sign_off_by: Optional[str] = None
+    sign_off_at: Optional[str] = None
+    sap_mapping_id: Optional[str] = None
+    fit_assessment: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -210,15 +252,16 @@ def get_results(engagement_id: str):
 
 @app.post("/requirements", response_model=RequirementResponse, status_code=201)
 def post_requirement(body: RequirementCreate):
+    kwargs = body.dict()
+    engagement_id = kwargs.pop("engagement_id")
+    title = kwargs.pop("title")
+    description = kwargs.pop("description")
     try:
         req = create_requirement(
-            engagement_id=body.engagement_id,
-            title=body.title,
-            description=body.description,
-            source_type=body.source_type,
-            tags=body.tags,
-            stakeholder=body.stakeholder,
-            raw_input=body.raw_input,
+            engagement_id=engagement_id,
+            title=title,
+            description=description,
+            **kwargs,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
