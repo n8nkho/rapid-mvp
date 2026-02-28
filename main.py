@@ -78,6 +78,11 @@ class RequirementUpdate(BaseModel):
     description: Optional[str] = None
     stakeholder: Optional[str] = None
 
+class TranscriptExtractRequest(BaseModel):
+    engagement_id: str
+    stakeholder: str
+    transcript_text: str
+
 class RequirementResponse(BaseModel):
     req_id: str
     engagement_id: str
@@ -227,6 +232,70 @@ def list_requirements(engagement_id: str):
         return get_requirements_by_engagement(engagement_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/requirements/extract-from-transcript", status_code=201)
+def extract_from_transcript(body: TranscriptExtractRequest):
+    provider = get_provider()
+    system_prompt = """You are an expert business analyst capturing requirements from conversation transcripts for SAP S/4HANA implementation projects.
+
+Extract discrete business requirements from the transcript. For each requirement identify:
+- title: Brief descriptive title (max 10 words)
+- description: Detailed description of the business need or process
+- tags: Array of applicable tags — use only values from: pain_point, manual_step, secret_sauce, workaround, hand_off
+
+Return a JSON array only:
+[
+  {
+    "title": "requirement title",
+    "description": "detailed description of the requirement",
+    "tags": ["tag1", "tag2"]
+  }
+]
+
+Rules:
+- Each requirement must be distinct and actionable
+- Tags must only come from: pain_point, manual_step, secret_sauce, workaround, hand_off
+- Return [] if no clear requirements are found"""
+
+    user_prompt = f"Extract business requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
+
+    try:
+        result = provider.complete(system_prompt, user_prompt)
+        raw_text = result.get("content", "[]")
+
+        json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        if not json_match:
+            raise ValueError("No JSON array found in response")
+
+        extracted = json.loads(json_match.group())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
+
+    valid_tags = {"pain_point", "manual_step", "secret_sauce", "workaround", "hand_off"}
+    created = []
+    for item in extracted:
+        tags = [t for t in (item.get("tags") or []) if t in valid_tags]
+        try:
+            req = create_requirement(
+                engagement_id=body.engagement_id,
+                title=item.get("title", "Untitled"),
+                description=item.get("description", ""),
+                source_type="Conversation",
+                tags=tags,
+                stakeholder=body.stakeholder,
+                raw_input=body.transcript_text,
+            )
+            if req:
+                created.append({
+                    "req_id": req["req_id"],
+                    "title": req["title"],
+                    "tags": req.get("tags", []),
+                })
+        except Exception as e:
+            print(f"Failed to create requirement '{item.get('title')}': {e}")
+
+    return {"created": len(created), "requirements": created}
+
 
 @app.get("/requirements/{req_id}", response_model=RequirementResponse)
 def get_requirement(req_id: str, engagement_id: str):
