@@ -10,17 +10,24 @@ class AnthropicProvider:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-    def complete(self, prompt, system=""):
+    def complete(self, system_prompt, user_prompt):
         msg = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
-            system=system or "You are RAPID, an SAP implementation assistant.",
-            messages=[{"role": "user", "content": prompt}]
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
         )
         self.call_count += 1
         self.total_input_tokens += msg.usage.input_tokens
         self.total_output_tokens += msg.usage.output_tokens
-        return msg.content[0].text
+        tokens_used = msg.usage.input_tokens + msg.usage.output_tokens
+        return {
+            "content": msg.content[0].text,
+            "tokens_used": tokens_used
+        }
+
+def get_provider():
+    return AnthropicProvider()
 
 def get_llm_provider():
     return AnthropicProvider()
