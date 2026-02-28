@@ -17,6 +17,13 @@ from database import (
     get_requirements_by_engagement,
     get_requirement_by_id,
     update_requirement,
+    create_client,
+    get_client,
+    list_clients,
+    create_engagement,
+    get_engagement,
+    list_engagements,
+    get_engagement_with_client,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -119,6 +126,22 @@ class ArchaeologistSessionRequest(BaseModel):
     business_process: str
     message: str
     session_history: Optional[List[Dict]] = []
+
+class ClientCreate(BaseModel):
+    name: str
+    industry: Optional[str] = None
+    employees: Optional[int] = None
+    legal_entities: Optional[int] = None
+    current_systems: Optional[str] = None
+    countries: Optional[str] = None
+    regulatory_environment: Optional[str] = None
+
+class EngagementCreate(BaseModel):
+    client_id: str
+    name: str
+    description: Optional[str] = None
+    go_live_date: Optional[str] = None
+    project_type: Optional[str] = None
 
 class SignOffRequest(BaseModel):
     level: str      # "sme" or "owner"
@@ -261,6 +284,95 @@ def get_results(engagement_id: str):
     return {"engagement_id": engagement_id, "total": len(results), "results": results}
 
 
+# ── Client context helper ─────────────────────────────────────────────────────
+
+def _build_client_context_line(engagement_id: str) -> str:
+    """Return a single context sentence from engagement + client, or empty string."""
+    try:
+        ctx = get_engagement_with_client(engagement_id)
+    except Exception:
+        return ""
+    if not ctx:
+        return ""
+    client = ctx.get("client") or {}
+    parts = []
+    if client.get("name"):
+        parts.append(f"Client: {client['name']}")
+    if client.get("industry"):
+        parts.append(f"Industry: {client['industry']}")
+    if client.get("employees"):
+        parts.append(f"Size: {client['employees']} employees")
+    if client.get("legal_entities"):
+        parts.append(f"{client['legal_entities']} legal entities")
+    if client.get("current_systems"):
+        parts.append(f"Current systems: {client['current_systems']}")
+    if client.get("countries"):
+        parts.append(f"Countries: {client['countries']}")
+    if client.get("regulatory_environment"):
+        parts.append(f"Regulatory: {client['regulatory_environment']}")
+    return ", ".join(parts) if parts else ""
+
+
+# ── Clients ───────────────────────────────────────────────────────────────────
+
+@app.post("/clients", status_code=201)
+def post_client(body: ClientCreate):
+    try:
+        client = create_client(body.dict(exclude_none=True))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not client:
+        raise HTTPException(status_code=500, detail="Failed to create client")
+    return client
+
+@app.get("/clients")
+def list_all_clients():
+    try:
+        return {"clients": list_clients()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/clients/{client_id}")
+def get_single_client(client_id: str):
+    try:
+        client = get_client(client_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not client:
+        raise HTTPException(status_code=404, detail=f"{client_id} not found")
+    return client
+
+
+# ── Engagements ───────────────────────────────────────────────────────────────
+
+@app.post("/engagements", status_code=201)
+def post_engagement(body: EngagementCreate):
+    try:
+        eng = create_engagement(body.dict(exclude_none=True))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not eng:
+        raise HTTPException(status_code=500, detail="Failed to create engagement")
+    return eng
+
+@app.get("/engagements")
+def list_all_engagements(client_id: Optional[str] = None):
+    try:
+        return {"engagements": list_engagements(client_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/engagements/{engagement_id}")
+def get_single_engagement(engagement_id: str):
+    try:
+        eng = get_engagement_with_client(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"{engagement_id} not found")
+    return eng
+
+
 # ── Requirements ──────────────────────────────────────────────────────────────
 
 @app.post("/requirements", response_model=RequirementResponse, status_code=201)
@@ -292,6 +404,7 @@ def list_requirements(engagement_id: str):
 @app.post("/requirements/extract-from-transcript", status_code=201)
 def extract_from_transcript(body: TranscriptExtractRequest):
     provider = get_provider()
+    client_context = _build_client_context_line(body.engagement_id)
     system_prompt = """You are an expert business analyst capturing requirements from conversation transcripts for SAP S/4HANA implementation projects.
 
 Extract discrete business requirements from the transcript. For each requirement identify:
@@ -324,6 +437,9 @@ Rules:
 - Each requirement must be distinct and actionable
 - tags must only come from: pain_point, manual_step, secret_sauce, workaround, hand_off
 - Return [] if no clear requirements are found"""
+
+    if client_context:
+        system_prompt = system_prompt + f"\n\nEngagement context: {client_context}"
 
     user_prompt = f"Stakeholder: {body.stakeholder}\n\nExtract requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
 
@@ -577,6 +693,12 @@ def _extract_json_object(text: str) -> dict:
 def archaeologist_session(body: ArchaeologistSessionRequest):
     provider = get_provider()
 
+    # Inject client context into system prompt
+    system_prompt = _ARCHAEOLOGIST_SYSTEM_PROMPT
+    client_context = _build_client_context_line(body.engagement_id)
+    if client_context:
+        system_prompt = system_prompt + f"\n\nEngagement context: {client_context}"
+
     # Build conversation as a single user message (history + current turn)
     lines = [
         f"Context:",
@@ -595,7 +717,7 @@ def archaeologist_session(body: ArchaeologistSessionRequest):
     user_prompt = "\n".join(lines)
 
     try:
-        result = provider.complete(_ARCHAEOLOGIST_SYSTEM_PROMPT, user_prompt, max_tokens=2048, model=MODEL_SONNET)
+        result = provider.complete(system_prompt, user_prompt, max_tokens=2048, model=MODEL_SONNET)
         raw_text = result.get("content", "{}")
         parsed = _extract_json_object(raw_text)
     except Exception as e:

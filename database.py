@@ -151,3 +151,97 @@ def update_requirement(req_id: str, engagement_id: str, updates: dict) -> dict:
         .execute()
     )
     return response.data[0] if response.data else {}
+
+
+# ── Clients ───────────────────────────────────────────────────────────────────
+
+def _next_client_id() -> str:
+    """Generate next sequential CLI-XXX id, globally unique."""
+    response = supabase.table("clients").select("client_id").execute()
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        try:
+            nums.append(int(row["client_id"].split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"CLI-{max(nums, default=0) + 1:03d}"
+
+
+def create_client(data: dict) -> dict:
+    client_id = _next_client_id()
+    record = {"client_id": client_id, **data}
+    response = supabase.table("clients").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_client(client_id: str) -> dict:
+    response = (
+        supabase.table("clients")
+        .select("*")
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def list_clients() -> list:
+    response = supabase.table("clients").select("*").order("client_id").execute()
+    return response.data or []
+
+
+# ── Engagements ───────────────────────────────────────────────────────────────
+
+def _next_engagement_id() -> str:
+    """Generate next sequential ENG-XXX id, globally unique."""
+    response = supabase.table("engagements").select("engagement_id").execute()
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        try:
+            nums.append(int(row["engagement_id"].split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"ENG-{max(nums, default=0) + 1:03d}"
+
+
+def create_engagement(data: dict) -> dict:
+    engagement_id = _next_engagement_id()
+    record = {
+        "engagement_id": engagement_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **data,
+    }
+    response = supabase.table("engagements").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_engagement(engagement_id: str) -> dict:
+    response = (
+        supabase.table("engagements")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def list_engagements(client_id: str = None) -> list:
+    query = supabase.table("engagements").select("*").order("engagement_id")
+    if client_id:
+        query = query.eq("client_id", client_id)
+    return query.execute().data or []
+
+
+def get_engagement_with_client(engagement_id: str) -> dict:
+    """Return engagement dict merged with its client as a 'client' key."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        return None
+    client_id = eng.get("client_id")
+    client = get_client(client_id) if client_id else {}
+    return {**eng, "client": client or {}}
