@@ -376,6 +376,157 @@ Rules:
     return {"created": len(created), "requirements": created}
 
 
+# ── Domain Templates ───────────────────────────────────────────────────────────
+
+_DOMAIN_TEMPLATES: Dict[str, List[Dict]] = {
+    "finance": [
+        {
+            "title": "Automated customer invoicing on goods issue",
+            "description": "Automatically generate and send customer invoices when goods issue is posted, eliminating manual invoice creation and reducing billing cycle time.",
+            "business_process": "Order-to-Cash",
+            "priority": "Must-Have",
+            "category": "Automation",
+            "tags": ["manual_step", "pain_point"],
+            "shadow_tools": [],
+            "actors": [{"role": "Billing Clerk", "type": "formal"}],
+            "kpi_impact": {"metric": "invoice cycle time", "target": "reduce by 50%", "unit": "days"},
+        },
+        {
+            "title": "Vendor payment approval with three-way match",
+            "description": "Enforce three-way match (PO / GR / invoice) before any vendor payment is approved, with automatic blocking of mismatched invoices.",
+            "business_process": "Procure-to-Pay",
+            "priority": "Must-Have",
+            "category": "Control/Compliance",
+            "tags": ["manual_step", "workaround"],
+            "shadow_tools": ["Excel spreadsheet"],
+            "actors": [{"role": "AP Manager", "type": "formal"}, {"role": "Auditor", "type": "formal"}],
+            "kpi_impact": None,
+        },
+        {
+            "title": "Month-end closing time reduction to 3 days",
+            "description": "Automate journal entries, intercompany reconciliation, and reporting to compress financial close from current state to 3 business days.",
+            "business_process": "Record-to-Report",
+            "priority": "Must-Have",
+            "category": "Reporting",
+            "tags": ["pain_point", "manual_step"],
+            "shadow_tools": ["Excel macro", "Access DB"],
+            "actors": [{"role": "Controller", "type": "formal"}, {"role": "CFO", "type": "formal"}],
+            "kpi_impact": {"metric": "month-end close days", "target": "3 days", "unit": "days"},
+        },
+    ],
+    "sales": [
+        {
+            "title": "Credit risk check and automatic order blocking",
+            "description": "Run automated credit risk checks when sales orders are created and block orders that exceed the customer credit limit, with workflow for manual override approval.",
+            "business_process": "Order-to-Cash",
+            "priority": "Must-Have",
+            "category": "Control/Compliance",
+            "tags": ["manual_step", "workaround"],
+            "shadow_tools": [],
+            "actors": [{"role": "Credit Manager", "type": "formal"}, {"role": "Sales Rep", "type": "formal"}],
+            "kpi_impact": None,
+        },
+        {
+            "title": "Shipping and warehouse integration triggers",
+            "description": "Automatically trigger warehouse pick/pack/ship tasks when sales orders are confirmed, with real-time status updates back to the sales order.",
+            "business_process": "Order-to-Cash",
+            "priority": "Should-Have",
+            "category": "Integration",
+            "tags": ["manual_step", "hand_off"],
+            "shadow_tools": ["WhatsApp group"],
+            "actors": [{"role": "Warehouse Operator", "type": "formal"}, {"role": "Shipping Clerk", "type": "formal"}],
+            "kpi_impact": {"metric": "order-to-ship time", "target": "reduce by 30%", "unit": "hours"},
+        },
+    ],
+    "procurement": [
+        {
+            "title": "Purchase requisition approval workflow",
+            "description": "Implement configurable multi-level approval workflow for purchase requisitions based on value thresholds, cost centre, and category, replacing email-based approvals.",
+            "business_process": "Procure-to-Pay",
+            "priority": "Must-Have",
+            "category": "Control/Compliance",
+            "tags": ["manual_step", "workaround"],
+            "shadow_tools": ["Email", "Excel spreadsheet"],
+            "actors": [{"role": "Requester", "type": "formal"}, {"role": "Budget Holder", "type": "formal"}, {"role": "Procurement Manager", "type": "formal"}],
+            "kpi_impact": None,
+        },
+        {
+            "title": "Automatic stock replenishment",
+            "description": "Automatically generate purchase requisitions when inventory falls below reorder points, using MRP logic to calculate quantities and lead times.",
+            "business_process": "Procure-to-Pay",
+            "priority": "Should-Have",
+            "category": "Automation",
+            "tags": ["manual_step"],
+            "shadow_tools": [],
+            "actors": [{"role": "Inventory Planner", "type": "formal"}],
+            "kpi_impact": {"metric": "stockout events", "target": "reduce by 80%", "unit": "incidents/month"},
+        },
+    ],
+    "manufacturing": [
+        {
+            "title": "MRP capacity-aware order conversion",
+            "description": "Convert planned orders to production orders only when capacity is available, integrating MRP with capacity planning to prevent overloading work centres.",
+            "business_process": "Plan-to-Produce",
+            "priority": "Must-Have",
+            "category": "Automation",
+            "tags": ["manual_step", "pain_point"],
+            "shadow_tools": ["Excel macro"],
+            "actors": [{"role": "Production Planner", "type": "formal"}, {"role": "Shop Floor Supervisor", "type": "formal"}],
+            "kpi_impact": {"metric": "schedule adherence", "target": "above 95%", "unit": "percent"},
+        },
+        {
+            "title": "Production variance alerts",
+            "description": "Automatically detect and alert when actual production costs or quantities deviate from standard by more than a configurable threshold.",
+            "business_process": "Plan-to-Produce",
+            "priority": "Should-Have",
+            "category": "Reporting",
+            "tags": ["pain_point"],
+            "shadow_tools": [],
+            "actors": [{"role": "Cost Accountant", "type": "formal"}, {"role": "Production Manager", "type": "formal"}],
+            "kpi_impact": None,
+        },
+    ],
+    "hr": [
+        {
+            "title": "Digital onboarding workflow for new hires",
+            "description": "Automate the end-to-end onboarding process — contract generation, IT provisioning, payroll setup, and training assignment — triggered on hire date.",
+            "business_process": "Hire-to-Retire",
+            "priority": "Must-Have",
+            "category": "Automation",
+            "tags": ["manual_step", "hand_off"],
+            "shadow_tools": ["Email", "Shared Drive"],
+            "actors": [{"role": "HR Business Partner", "type": "formal"}, {"role": "Line Manager", "type": "formal"}, {"role": "IT Admin", "type": "formal"}],
+            "kpi_impact": {"metric": "onboarding time to productivity", "target": "reduce by 40%", "unit": "days"},
+        },
+        {
+            "title": "Automated payroll variance reporting",
+            "description": "Generate monthly payroll variance reports comparing current vs prior period, flagging anomalies above threshold for payroll manager review before approval.",
+            "business_process": "Hire-to-Retire",
+            "priority": "Must-Have",
+            "category": "Reporting",
+            "tags": ["manual_step", "pain_point"],
+            "shadow_tools": ["Excel macro"],
+            "actors": [{"role": "Payroll Manager", "type": "formal"}, {"role": "Finance Controller", "type": "formal"}],
+            "kpi_impact": None,
+        },
+    ],
+}
+
+_VALID_DOMAINS = list(_DOMAIN_TEMPLATES.keys())
+
+
+@app.get("/requirements/templates")
+def get_requirement_templates(domain: str):
+    key = domain.lower()
+    if key not in _DOMAIN_TEMPLATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown domain '{domain}'. Valid options: {', '.join(_VALID_DOMAINS)}",
+        )
+    templates = _DOMAIN_TEMPLATES[key]
+    return {"domain": key, "total": len(templates), "templates": templates}
+
+
 _ARCHAEOLOGIST_SYSTEM_PROMPT = """You are a senior business analyst and process archaeologist conducting a discovery interview for a Cloud ERP transformation. Your job is to deeply understand how work actually happens today — not how it should work, but how it really works, including workarounds, exceptions, and shadow tools.
 
 Your behaviour:
