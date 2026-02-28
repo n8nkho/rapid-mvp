@@ -132,9 +132,11 @@ class ClientCreate(BaseModel):
     industry: Optional[str] = None
     employees: Optional[int] = None
     legal_entities: Optional[int] = None
-    current_systems: Optional[str] = None
-    countries: Optional[str] = None
-    regulatory_environment: Optional[str] = None
+    current_systems: Optional[List[str]] = None
+    systems_to_keep: Optional[List[str]] = None
+    systems_to_replace: Optional[List[str]] = None
+    countries: Optional[List[str]] = None
+    regulatory_environment: Optional[List[str]] = None
 
 class EngagementCreate(BaseModel):
     client_id: str
