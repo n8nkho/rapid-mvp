@@ -12,6 +12,7 @@ from providers import get_provider
 from database import (
     save_gap_analysis,
     get_results_by_engagement,
+    get_gap_results_by_req_id,
     create_requirement,
     get_requirements_by_engagement,
     get_requirement_by_id,
@@ -692,6 +693,57 @@ def sign_off_requirement(req_id: str, engagement_id: str, body: SignOffRequest):
     if not updated:
         raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
     return updated
+
+
+@app.get("/requirements/{req_id}/traceability")
+def get_traceability(req_id: str, engagement_id: str):
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    try:
+        gap_records = get_gap_results_by_req_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Derive answer_to from requirement fields
+    tags = req.get("tags") or []
+    pain_tags = {"pain_point", "manual_step", "workaround"}
+    pain_points = [t for t in tags if t in pain_tags]
+    actors = req.get("actors") or []
+    actor_names = [a.get("role", "") for a in actors if isinstance(a, dict)]
+    who_asked_parts = [req.get("stakeholder")] + actor_names
+    who_asked = ", ".join(p for p in who_asked_parts if p)
+
+    description = req.get("description", "")
+    why_needed = description[:200] + ("..." if len(description) > 200 else "")
+    what_problem = (
+        f"Tags indicate: {', '.join(pain_points)}. " if pain_points else ""
+    ) + (
+        f"Shadow tools in use: {', '.join(req.get('shadow_tools') or [])}." if req.get("shadow_tools") else ""
+    )
+
+    return {
+        "requirement": req,
+        "as_is_evidence": {
+            "current_state_ref": req.get("current_state_ref"),
+            "actors": actors,
+            "shadow_tools": req.get("shadow_tools"),
+            "tags": tags,
+        },
+        "gap_analysis": {
+            "matches": gap_records[0].get("matches") if gap_records else [],
+            "total_analyses": len(gap_records),
+        },
+        "answer_to": {
+            "why_needed": why_needed,
+            "who_asked": who_asked or "Unknown",
+            "what_problem": what_problem or "No pain points tagged",
+        },
+    }
 
 
 # ── Gap Analysis ──────────────────────────────────────────────────────────────

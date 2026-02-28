@@ -130,6 +130,18 @@ def get_requirement_by_id(req_id: str, engagement_id: str) -> dict:
     return data[0] if data else None
 
 
+def get_gap_results_by_req_id(req_id: str, engagement_id: str) -> list:
+    response = (
+        supabase.table("gap_results")
+        .select("*")
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .order("timestamp", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
 def update_requirement(req_id: str, engagement_id: str, updates: dict) -> dict:
     response = (
         supabase.table("requirements")
