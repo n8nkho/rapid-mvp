@@ -111,6 +111,14 @@ class TranscriptExtractRequest(BaseModel):
     stakeholder: str
     transcript_text: str
 
+class ArchaeologistSessionRequest(BaseModel):
+    engagement_id: str
+    stakeholder: str
+    role: str
+    business_process: str
+    message: str
+    session_history: Optional[List[Dict]] = []
+
 class RequirementResponse(BaseModel):
     req_id: str
     engagement_id: str
@@ -338,6 +346,109 @@ Rules:
             print(f"Failed to create requirement '{item.get('title')}': {e}")
 
     return {"created": len(created), "requirements": created}
+
+
+_ARCHAEOLOGIST_SYSTEM_PROMPT = """You are a senior business analyst and process archaeologist conducting a discovery interview for a Cloud ERP transformation. Your job is to deeply understand how work actually happens today — not how it should work, but how it really works, including workarounds, exceptions, and shadow tools.
+
+Your behaviour:
+- Ask one focused question at a time
+- Probe for: who actually does each step (not just job titles), what breaks, what is manual, what tools people use unofficially, what the person is proud of and wants to preserve
+- Adapt your questions to the person role: ask a warehouse operator about physical flows and exceptions; ask a CFO about controls, reporting pain, and month-end pressure
+- When you learn something significant, summarise it back: "So if I understand correctly, you manually reconcile the bank statement every morning in Excel before the ERP is updated — is that right?"
+- After 3-4 exchanges, offer to extract what you have learned as a structured requirement
+
+Response format — always return valid JSON only, no markdown fences:
+{
+  "reply": "your next question or summary to the user",
+  "extracted": {
+    "ready": false,
+    "title": "",
+    "description": "",
+    "tags": [],
+    "shadow_tools": [],
+    "actors": [],
+    "pain_points": [],
+    "secret_sauce": []
+  },
+  "suggested_follow_ups": ["question 1", "question 2"]
+}
+
+When extracted.ready is true, populate all extracted fields with what you have learned."""
+
+
+def _extract_json_object(text: str) -> dict:
+    """Extract first complete JSON object from text, stripping markdown fences."""
+    text = re.sub(r'```(?:json)?\s*', '', text).strip()
+    start = text.find('{')
+    if start == -1:
+        raise ValueError("No JSON object found in response")
+    depth = 0
+    for i, c in enumerate(text[start:], start):
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError("No complete JSON object found in response")
+
+
+@app.post("/requirements/archaeologist-session")
+def archaeologist_session(body: ArchaeologistSessionRequest):
+    provider = get_provider()
+
+    # Build conversation as a single user message (history + current turn)
+    lines = [
+        f"Context:",
+        f"  Stakeholder: {body.stakeholder} | Role: {body.role} | Business Process: {body.business_process}",
+        "",
+    ]
+    if body.session_history:
+        lines.append("Conversation so far:")
+        for msg in body.session_history:
+            prefix = "Analyst" if msg.get("role") == "assistant" else "Stakeholder"
+            lines.append(f"  {prefix}: {msg.get('content', '')}")
+        lines.append("")
+    lines.append(f"Stakeholder: {body.message}")
+    lines.append("")
+    lines.append("Respond as the analyst. Return valid JSON only.")
+    user_prompt = "\n".join(lines)
+
+    try:
+        result = provider.complete(_ARCHAEOLOGIST_SYSTEM_PROMPT, user_prompt, max_tokens=2048)
+        raw_text = result.get("content", "{}")
+        parsed = _extract_json_object(raw_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Archaeologist LLM error: {e}")
+
+    extracted = parsed.get("extracted", {})
+    response: Dict = {
+        "reply": parsed.get("reply", ""),
+        "extracted": extracted,
+        "suggested_follow_ups": parsed.get("suggested_follow_ups", []),
+    }
+
+    if extracted.get("ready"):
+        valid_tags = {"pain_point", "manual_step", "secret_sauce", "workaround", "hand_off"}
+        tags = [t for t in (extracted.get("tags") or []) if t in valid_tags]
+        try:
+            req = create_requirement(
+                engagement_id=body.engagement_id,
+                title=extracted.get("title", "Extracted Requirement"),
+                description=extracted.get("description", ""),
+                source_type="Conversation",
+                tags=tags,
+                stakeholder=body.stakeholder,
+                business_process=body.business_process,
+                actors=extracted.get("actors") or None,
+                shadow_tools=extracted.get("shadow_tools") or None,
+            )
+            if req:
+                response["req_id"] = req.get("req_id")
+        except Exception as e:
+            print(f"Auto-create requirement failed (non-fatal): {e}")
+
+    return response
 
 
 @app.get("/requirements/{req_id}", response_model=RequirementResponse)

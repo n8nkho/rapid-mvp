@@ -10,10 +10,10 @@ class AnthropicProvider:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-    def complete(self, system_prompt, user_prompt):
+    def complete(self, system_prompt, user_prompt, max_tokens=1024):
         msg = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
+            max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
         )
