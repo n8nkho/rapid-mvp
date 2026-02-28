@@ -106,6 +106,68 @@ def build_catalogue_for_prompt(lob_filter: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
+_GAP_SYSTEM_PROMPT = """You are an expert SAP S/4HANA implementation consultant specializing in Fit-to-Standard gap analysis.
+
+Your task: Given a business process description, identify the most relevant SAP S/4HANA Cloud Public Edition scope items from the provided catalogue.
+
+Instructions:
+1. Analyze the business process description semantically - look beyond keywords to understand intent
+2. Return the top matching scope items ranked by relevance
+3. For each match, provide confidence (HIGH / MEDIUM / LOW) and a brief rationale
+4. Consider that one business requirement often maps to multiple scope items
+5. Always return valid JSON only
+
+Response format (JSON array):
+[
+  {
+    "id": "scope_item_code",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "rationale": "One sentence explaining why this scope item matches"
+  }
+]"""
+
+
+def _run_gap_analysis(
+    provider,
+    process_description: str,
+    top_n: int = 5,
+    lob_filter: Optional[str] = None,
+) -> tuple:
+    """Returns (matches: List[ScopeItemMatch], tokens_used: int)."""
+    catalogue = build_catalogue_for_prompt(lob_filter)
+    user_prompt = (
+        f"Business Process Description:\n{process_description}\n\n"
+        f"SAP S/4HANA Cloud 2602 Scope Item Catalogue (2602 release):\n{catalogue}\n\n"
+        f"Return the top {top_n} most relevant scope items as JSON."
+    )
+    result = provider.complete(_GAP_SYSTEM_PROMPT, user_prompt)
+    raw_text = result.get("content", "[]")
+    tokens_used = result.get("tokens_used")
+
+    json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+    if not json_match:
+        raise ValueError("No JSON array found in response")
+
+    matches_raw = json.loads(json_match.group())
+    scope_lookup = {item['id']: item for item in SCOPE_ITEMS}
+    matches = []
+    for m in matches_raw[:top_n]:
+        item_id = m.get('id', '')
+        scope = scope_lookup.get(item_id, {})
+        if scope:
+            matches.append(ScopeItemMatch(
+                id=item_id,
+                name=scope['name'],
+                lob=scope['lob'],
+                process_group=scope['process_group'],
+                description=scope['description'],
+                confidence=m.get('confidence', 'MEDIUM'),
+                rationale=m.get('rationale', ''),
+                migration_objects=scope.get('migration_objects', []),
+            ))
+    return matches, tokens_used
+
+
 # ── Health / Catalogue / LOBs ─────────────────────────────────────────────────
 
 @app.get("/health")
@@ -347,3 +409,51 @@ def get_engagement_summary(engagement_id: str):
         "total_analysed": by_status.get("analysed", 0),
         "gap_results_summary": gap_results_summary,
     }
+
+
+# ── Analyse All ───────────────────────────────────────────────────────────────
+
+@app.post("/engagement/{engagement_id}/analyse-all")
+def analyse_all(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    open_reqs = [r for r in requirements if r.get("status") == "open"]
+    if not open_reqs:
+        return {"processed": 0, "results": []}
+
+    provider = get_provider()
+    results = []
+
+    for req in open_reqs:
+        req_id = req["req_id"]
+        try:
+            matches, tokens_used = _run_gap_analysis(provider, req["description"])
+            timestamp = datetime.utcnow().isoformat()
+            try:
+                save_gap_analysis(
+                    engagement_id=engagement_id,
+                    process_description=req["description"],
+                    matches=[m.dict() for m in matches],
+                    tokens_used=tokens_used,
+                    timestamp=timestamp,
+                    req_id=req_id,
+                )
+            except Exception as db_err:
+                print(f"DB save failed for {req_id} (non-fatal): {db_err}")
+
+            update_requirement(req_id, engagement_id, {"status": "analysed"})
+
+            top = matches[0] if matches else None
+            results.append({
+                "req_id": req_id,
+                "title": req.get("title"),
+                "top_match_id": top.id if top else None,
+                "top_match_name": top.name if top else None,
+            })
+        except Exception as e:
+            print(f"Analysis failed for {req_id}: {e}")
+
+    return {"processed": len(results), "results": results}
