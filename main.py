@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 
 # Import providers and database
-from providers import get_provider
+from providers import get_provider, MODEL_HAIKU, MODEL_SONNET
 from database import (
     save_gap_analysis,
     get_results_by_engagement,
@@ -328,7 +328,7 @@ Rules:
     user_prompt = f"Stakeholder: {body.stakeholder}\n\nExtract requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
 
     try:
-        result = provider.complete(system_prompt, user_prompt, max_tokens=2048)
+        result = provider.complete(system_prompt, user_prompt, max_tokens=2048, model=MODEL_SONNET)
         raw_text = result.get("content", "[]")
 
         json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
@@ -595,7 +595,7 @@ def archaeologist_session(body: ArchaeologistSessionRequest):
     user_prompt = "\n".join(lines)
 
     try:
-        result = provider.complete(_ARCHAEOLOGIST_SYSTEM_PROMPT, user_prompt, max_tokens=2048)
+        result = provider.complete(_ARCHAEOLOGIST_SYSTEM_PROMPT, user_prompt, max_tokens=2048, model=MODEL_SONNET)
         raw_text = result.get("content", "{}")
         parsed = _extract_json_object(raw_text)
     except Exception as e:

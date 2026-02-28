@@ -2,6 +2,9 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+MODEL_SONNET = "claude-sonnet-4-6"
+
 class AnthropicProvider:
     def __init__(self):
         import anthropic
@@ -10,9 +13,9 @@ class AnthropicProvider:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-    def complete(self, system_prompt, user_prompt, max_tokens=1024):
+    def complete(self, system_prompt, user_prompt, max_tokens=1024, model=MODEL_HAIKU):
         msg = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=model,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
