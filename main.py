@@ -292,26 +292,38 @@ def extract_from_transcript(body: TranscriptExtractRequest):
 Extract discrete business requirements from the transcript. For each requirement identify:
 - title: Brief descriptive title (max 10 words)
 - description: Detailed description of the business need or process
-- tags: Array of applicable tags — use only values from: pain_point, manual_step, secret_sauce, workaround, hand_off
+- tags: Array — use only: pain_point, manual_step, secret_sauce, workaround, hand_off
+- business_process: One of Procure-to-Pay, Order-to-Cash, Record-to-Report, Plan-to-Produce, Hire-to-Retire (pick closest)
+- priority: Must-Have if the pain is severe or a compliance/control need; Should-Have if clearly beneficial; Nice-to-Have if aspirational
+- category: One of Automation, Control/Compliance, Reporting, Integration, UX, Data Migration
+- shadow_tools: Array of unofficial tools mentioned (e.g. "Excel macro", "WhatsApp", "Access DB"). Empty array if none.
+- actors: Array of objects {"role": "job title or name", "type": "formal" or "informal"} for people mentioned
+- kpi_impact: Object {"metric": "...", "current": "...", "target": "...", "unit": "..."} if any measurable metric is implied (e.g. "takes 3 days" → target to reduce). null if no metric.
 
-Return a JSON array only:
+Return a JSON array only — no markdown fences:
 [
   {
     "title": "requirement title",
-    "description": "detailed description of the requirement",
-    "tags": ["tag1", "tag2"]
+    "description": "detailed description",
+    "tags": ["tag1"],
+    "business_process": "Order-to-Cash",
+    "priority": "Must-Have",
+    "category": "Automation",
+    "shadow_tools": [],
+    "actors": [{"role": "AP Clerk", "type": "formal"}],
+    "kpi_impact": null
   }
 ]
 
 Rules:
 - Each requirement must be distinct and actionable
-- Tags must only come from: pain_point, manual_step, secret_sauce, workaround, hand_off
+- tags must only come from: pain_point, manual_step, secret_sauce, workaround, hand_off
 - Return [] if no clear requirements are found"""
 
-    user_prompt = f"Extract business requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
+    user_prompt = f"Stakeholder: {body.stakeholder}\n\nExtract requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
 
     try:
-        result = provider.complete(system_prompt, user_prompt)
+        result = provider.complete(system_prompt, user_prompt, max_tokens=2048)
         raw_text = result.get("content", "[]")
 
         json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
@@ -335,12 +347,24 @@ Rules:
                 tags=tags,
                 stakeholder=body.stakeholder,
                 raw_input=body.transcript_text,
+                business_process=item.get("business_process") or None,
+                priority=item.get("priority") or "Must-Have",
+                category=item.get("category") or None,
+                shadow_tools=item.get("shadow_tools") or None,
+                actors=item.get("actors") or None,
+                kpi_impact=item.get("kpi_impact") or None,
             )
             if req:
                 created.append({
                     "req_id": req["req_id"],
                     "title": req["title"],
                     "tags": req.get("tags", []),
+                    "business_process": req.get("business_process"),
+                    "priority": req.get("priority"),
+                    "category": req.get("category"),
+                    "shadow_tools": req.get("shadow_tools"),
+                    "actors": req.get("actors"),
+                    "kpi_impact": req.get("kpi_impact"),
                 })
         except Exception as e:
             print(f"Failed to create requirement '{item.get('title')}': {e}")
