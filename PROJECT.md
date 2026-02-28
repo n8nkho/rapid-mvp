@@ -46,3 +46,23 @@ Test backend: curl https://rapid-mvp-production.up.railway.app/health
 1. Share this PROJECT.md and both CLAUDE.md files
 2. Say: Continue building RAPID - read PROJECT.md first
 3. The AI has full context to continue any feature
+
+
+## Feature Backlog (prioritised sprints)
+Sprint 1: Client and Engagement Context
+Sprint 2: Cross-linking and Navigation
+Sprint 3: Multimodal Upload
+Sprint 4: Process Hierarchy Levels 2-5
+Sprint 5: Flow Visualisation As-Is and To-Be
+Sprint 6: Excel Upload and Download
+Sprint 7: RICEFW Customisation Inventory
+
+## Current working features (confirmed 2026-02-28)
+- /capture page: Conversation tab, Single Requirement, Paste Transcript, Use Template
+- Requirements list with inline gap analysis, Sign Off, Traceability buttons
+- /engagement dashboard
+- /gap-analysis page
+- 244 SAP scope items in-memory
+- Archaeologist agent using Sonnet
+- Gap analysis using Haiku
+- Supabase: requirements and gap_results tables with full v2 schema
