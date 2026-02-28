@@ -19,6 +19,7 @@ def save_gap_analysis(
     matches: list,
     tokens_used: int = None,
     timestamp: str = None,
+    req_id: str = None,
 ) -> dict:
     record = {
         "engagement_id": engagement_id,
@@ -28,6 +29,8 @@ def save_gap_analysis(
     }
     if tokens_used is not None:
         record["tokens_used"] = tokens_used
+    if req_id is not None:
+        record["req_id"] = req_id
     response = supabase.table("gap_results").insert(record).execute()
     return response.data[0] if response.data else {}
 

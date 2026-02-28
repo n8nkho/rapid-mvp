@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import json
 import os
+import re
 from datetime import datetime
 
 # Import providers and database
@@ -244,7 +245,6 @@ Return the top {request.top_n} most relevant scope items as JSON."""
         raw_text = result.get("content", "[]")
         tokens_used = result.get("tokens_used")
 
-        import re
         json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
         if not json_match:
             raise ValueError("No JSON array found in response")
@@ -276,7 +276,8 @@ Return the top {request.top_n} most relevant scope items as JSON."""
                 process_description=process_description,
                 matches=[m.dict() for m in matches],
                 tokens_used=tokens_used,
-                timestamp=timestamp
+                timestamp=timestamp,
+                req_id=req_id,
             )
         except Exception as db_err:
             print(f"DB save failed (non-fatal): {db_err}")
@@ -293,3 +294,56 @@ Return the top {request.top_n} most relevant scope items as JSON."""
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Engagement Summary ────────────────────────────────────────────────────────
+
+@app.get("/engagement/{engagement_id}/summary")
+def get_engagement_summary(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+        gap_results = get_results_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    by_status: dict = {}
+    for req in requirements:
+        s = req.get("status", "open")
+        by_status[s] = by_status.get(s, 0) + 1
+
+    by_tag: dict = {}
+    for req in requirements:
+        for tag in (req.get("tags") or []):
+            by_tag[tag] = by_tag.get(tag, 0) + 1
+
+    # Index latest gap result per req_id (most recent first, results ordered desc)
+    results_by_req: dict = {}
+    for gr in gap_results:
+        rid = gr.get("req_id")
+        if rid and rid not in results_by_req:
+            results_by_req[rid] = gr
+
+    gap_results_summary = []
+    for req in requirements:
+        if req.get("status") == "analysed":
+            rid = req["req_id"]
+            gr = results_by_req.get(rid)
+            if gr:
+                matches = gr.get("matches") or []
+                top = matches[0] if matches else {}
+                gap_results_summary.append({
+                    "req_id": rid,
+                    "title": req.get("title"),
+                    "top_match_id": top.get("id"),
+                    "top_match_name": top.get("name"),
+                    "top_confidence": top.get("confidence"),
+                })
+
+    return {
+        "engagement_id": engagement_id,
+        "total_requirements": len(requirements),
+        "requirements_by_status": by_status,
+        "requirements_by_tag": by_tag,
+        "total_analysed": by_status.get("analysed", 0),
+        "gap_results_summary": gap_results_summary,
+    }
