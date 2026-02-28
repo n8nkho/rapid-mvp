@@ -1021,3 +1021,36 @@ def get_sign_off_status(engagement_id: str):
         **counts,
         "by_process": by_process,
     }
+
+
+# ── KPI Summary ────────────────────────────────────────────────────────────────
+
+@app.get("/engagement/{engagement_id}/kpi-summary")
+def get_kpi_summary(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    by_process: dict = {}
+    total_with_kpi = 0
+
+    for req in requirements:
+        kpi = req.get("kpi_impact")
+        if not kpi:
+            continue
+        total_with_kpi += 1
+        process = req.get("business_process") or "Unclassified"
+        by_process.setdefault(process, []).append({
+            "req_id": req["req_id"],
+            "title": req.get("title"),
+            "kpi_impact": kpi,
+            "priority": req.get("priority"),
+            "stakeholder": req.get("stakeholder"),
+        })
+
+    return {
+        "engagement_id": engagement_id,
+        "total_with_kpi": total_with_kpi,
+        "by_process": by_process,
+    }
