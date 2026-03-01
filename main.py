@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+import io
 import json
 import os
 import re
 import psycopg2
 from datetime import datetime, timezone
+from openpyxl import Workbook, load_workbook
 
 # Import providers and database
 from providers import get_provider, MODEL_HAIKU, MODEL_SONNET
@@ -244,6 +247,16 @@ class ProcessStepUpdate(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+def _normalize_tag(value: str) -> str:
+    """Normalise tag strings to canonical snake_case form, similar to frontend."""
+    if not value:
+        return ""
+    slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug
+
+
 def build_catalogue_for_prompt(lob_filter: Optional[str] = None) -> str:
     items = SCOPE_ITEMS
     if lob_filter:
@@ -291,7 +304,8 @@ def _run_gap_analysis(
         f"SAP S/4HANA Cloud 2602 Scope Item Catalogue (2602 release):\n{catalogue}\n\n"
         f"Return the top {top_n} most relevant scope items as JSON."
     )
-    result = provider.complete(_GAP_SYSTEM_PROMPT, user_prompt)
+    # Haiku is cheap and sufficient; keep max output small
+    result = provider.complete(_GAP_SYSTEM_PROMPT, user_prompt, max_tokens=512, model=MODEL_HAIKU)
     raw_text = result.get("content", "[]")
     tokens_used = result.get("tokens_used")
 
@@ -512,7 +526,8 @@ Rules:
     user_prompt = f"Stakeholder: {body.stakeholder}\n\nExtract requirements from this transcript:\n\n{body.transcript_text}\n\nReturn JSON array."
 
     try:
-        result = provider.complete(system_prompt, user_prompt, max_tokens=2048, model=MODEL_SONNET)
+        # Use cheaper model with tight token limit for extraction
+        result = provider.complete(system_prompt, user_prompt, max_tokens=768, model=MODEL_HAIKU)
         raw_text = result.get("content", "[]")
 
         json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
@@ -785,7 +800,8 @@ def archaeologist_session(body: ArchaeologistSessionRequest):
     user_prompt = "\n".join(lines)
 
     try:
-        result = provider.complete(system_prompt, user_prompt, max_tokens=2048, model=MODEL_SONNET)
+        # Use cheaper model with modest response size for dialogue
+        result = provider.complete(system_prompt, user_prompt, max_tokens=512, model=MODEL_HAIKU)
         raw_text = result.get("content", "{}")
         parsed = _extract_json_object(raw_text)
     except Exception as e:
@@ -1824,7 +1840,8 @@ def extract_process_steps(req_id: str, engagement_id: str):
             "Extract the As-Is process steps as a JSON array."
         )
         try:
-            result = provider.complete(_STEP_EXTRACT_SYSTEM_PROMPT, user_prompt, max_tokens=2048, model=MODEL_SONNET)
+            # Use cheaper model and cap tokens for step extraction
+            result = provider.complete(_STEP_EXTRACT_SYSTEM_PROMPT, user_prompt, max_tokens=768, model=MODEL_HAIKU)
             raw_text = result.get("content", "[]")
             json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
             if not json_match:
@@ -1962,6 +1979,222 @@ def seed_all_process_steps(engagement_id: str):
         "engagement_id": engagement_id,
         "requirements_seeded": len(seeded_reqs),
         "seeded": seeded_reqs,
+    }
+
+
+# ── Excel Upload / Download for Requirements (Sprint 6) ────────────────────────
+
+_EXCEL_TAGS_ALLOWED = {"pain_point", "manual_step", "secret_sauce", "workaround", "hand_off"}
+
+
+def _parse_excel_tags(raw: Optional[str]) -> List[str]:
+    """Parse a tags cell from Excel into canonical tag list."""
+    if not raw:
+        return []
+    parts = re.split(r"[;,]", str(raw))
+    result: List[str] = []
+    for p in parts:
+        norm = _normalize_tag(p)
+        if norm in _EXCEL_TAGS_ALLOWED and norm not in result:
+            result.append(norm)
+    return result
+
+
+@app.get("/engagement/{engagement_id}/requirements/export")
+def export_requirements_excel(engagement_id: str):
+    """Download all requirements for an engagement as an Excel file."""
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Requirements"
+
+    headers = [
+        "req_id",
+        "engagement_id",
+        "title",
+        "description",
+        "business_process",
+        "priority",
+        "category",
+        "tags",
+        "stakeholder",
+        "sign_off_status",
+    ]
+    ws.append(headers)
+
+    for r in requirements:
+        tags = r.get("tags") or []
+        tags_str = ", ".join(tags)
+        ws.append([
+            r.get("req_id"),
+            r.get("engagement_id"),
+            r.get("title"),
+            r.get("description"),
+            r.get("business_process"),
+            r.get("priority"),
+            r.get("category"),
+            tags_str,
+            r.get("stakeholder"),
+            r.get("sign_off_status"),
+        ])
+
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+
+    filename = f"{engagement_id}_requirements.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/engagement/{engagement_id}/requirements/import")
+async def import_requirements_excel(engagement_id: str, file: UploadFile = File(...)):
+    """Upload an Excel file to create or update requirements for an engagement.
+
+    Behaviour:
+    - If req_id matches an existing requirement → update selected fields.
+    - If req_id is blank → create a new requirement.
+    - Tags are normalised and filtered to the allowed set.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx Excel files are supported")
+
+    try:
+        contents = await file.read()
+        wb = load_workbook(io.BytesIO(contents), data_only=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=400, detail="Excel file is empty")
+
+    header = [str(c).strip().lower() if c is not None else "" for c in rows[0]]
+
+    def _col(name: str) -> Optional[int]:
+        try:
+            return header.index(name)
+        except ValueError:
+            return None
+
+    col_req_id = _col("req_id")
+    col_title = _col("title")
+    col_desc = _col("description")
+    col_bp = _col("business_process")
+    col_priority = _col("priority")
+    col_category = _col("category")
+    col_tags = _col("tags")
+    col_stakeholder = _col("stakeholder")
+    col_sign_off_status = _col("sign_off_status")
+
+    if col_title is None or col_desc is None:
+        raise HTTPException(status_code=400, detail="Excel must contain 'title' and 'description' header columns")
+
+    try:
+        existing = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    existing_by_req = {r.get("req_id"): r for r in existing if r.get("req_id")}
+
+    def _cell(row_values, idx: Optional[int]) -> Optional[str]:
+        if idx is None or idx >= len(row_values):
+            return None
+        value = row_values[idx]
+        if value is None:
+            return None
+        return str(value).strip()
+
+    created_ids: List[str] = []
+    updated_ids: List[str] = []
+    errors: List[Dict[str, Any]] = []
+
+    for row_idx, row in enumerate(rows[1:], start=2):
+        # Skip completely empty rows
+        if not any(row):
+            continue
+
+        title = _cell(row, col_title)
+        description = _cell(row, col_desc)
+        if not title or not description:
+            errors.append({"row": row_idx, "error": "Missing title or description"})
+            continue
+
+        req_id = _cell(row, col_req_id)
+        tags_raw = _cell(row, col_tags)
+        tags = _parse_excel_tags(tags_raw)
+
+        payload: Dict[str, Any] = {
+            "title": title,
+            "description": description,
+        }
+
+        bp = _cell(row, col_bp)
+        if bp:
+            payload["business_process"] = bp
+        priority = _cell(row, col_priority)
+        if priority:
+            payload["priority"] = priority
+        category = _cell(row, col_category)
+        if category:
+            payload["category"] = category
+        stakeholder = _cell(row, col_stakeholder)
+        if stakeholder:
+            payload["stakeholder"] = stakeholder
+        sign_off_status = _cell(row, col_sign_off_status)
+        if sign_off_status:
+            payload["sign_off_status"] = sign_off_status
+
+        try:
+            if req_id and req_id in existing_by_req:
+                # Update existing requirement
+                updates = {k: v for k, v in payload.items() if k not in {"title", "description"}}
+                updates["title"] = title
+                updates["description"] = description
+                if tags:
+                    updates["tags"] = tags
+                updated = update_requirement(
+                    req_id=req_id,
+                    engagement_id=engagement_id,
+                    updates=updates,
+                )
+                if updated:
+                    updated_ids.append(updated.get("req_id", req_id))
+            else:
+                # Create new requirement
+                created = create_requirement(
+                    engagement_id=engagement_id,
+                    title=title,
+                    description=description,
+                    source_type="Excel",
+                    tags=tags,
+                    business_process=payload.get("business_process"),
+                    priority=payload.get("priority"),
+                    category=payload.get("category"),
+                    stakeholder=payload.get("stakeholder"),
+                    sign_off_status=payload.get("sign_off_status"),
+                )
+                if created:
+                    created_ids.append(created.get("req_id"))
+        except Exception as e:
+            errors.append({"row": row_idx, "error": str(e)})
+
+    return {
+        "engagement_id": engagement_id,
+        "created": len(created_ids),
+        "updated": len(updated_ids),
+        "created_req_ids": created_ids,
+        "updated_req_ids": updated_ids,
+        "errors": errors,
     }
 
 
