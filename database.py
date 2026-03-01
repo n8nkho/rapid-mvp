@@ -322,3 +322,107 @@ def upload_file_to_storage(
         path, file_bytes, {"content-type": content_type}
     )
     return supabase.storage.from_("rapid-assets").get_public_url(path)
+
+
+# ── Process Steps ─────────────────────────────────────────────────────────────
+#
+# SQL migration — run once in Supabase SQL editor:
+#
+#   CREATE TABLE IF NOT EXISTS process_steps (
+#     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+#     req_id          text NOT NULL,
+#     engagement_id   text NOT NULL,
+#     step_number     int NOT NULL DEFAULT 1,
+#     title           text NOT NULL,
+#     description     text,
+#     performer_name  text,
+#     performer_role  text,
+#     shape           text DEFAULT 'process',
+#     step_type       text DEFAULT 'manual',
+#     duration_minutes float,
+#     systems_used    text[],
+#     kpis            jsonb,
+#     is_pain_point   boolean DEFAULT false,
+#     next_step_id    text,
+#     branches        jsonb,
+#     created_at      timestamptz DEFAULT now(),
+#     updated_at      timestamptz DEFAULT now()
+#   );
+#   CREATE INDEX IF NOT EXISTS idx_process_steps_req ON process_steps (req_id, engagement_id);
+
+import uuid as _uuid_module
+
+
+def create_process_step(data: dict) -> dict:
+    """Insert a new process step. data must include req_id and engagement_id."""
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": str(_uuid_module.uuid4()),
+        "created_at": now,
+        "updated_at": now,
+        **data,
+    }
+    response = supabase.table("process_steps").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_process_steps(req_id: str, engagement_id: str) -> list:
+    response = (
+        supabase.table("process_steps")
+        .select("*")
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .order("step_number")
+        .execute()
+    )
+    return response.data or []
+
+
+def get_process_step(step_id: str, req_id: str, engagement_id: str) -> dict:
+    response = (
+        supabase.table("process_steps")
+        .select("*")
+        .eq("id", step_id)
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def update_process_step(step_id: str, req_id: str, engagement_id: str, updates: dict) -> dict:
+    updates = {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}
+    response = (
+        supabase.table("process_steps")
+        .update(updates)
+        .eq("id", step_id)
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def delete_process_step(step_id: str, req_id: str, engagement_id: str) -> bool:
+    response = (
+        supabase.table("process_steps")
+        .delete()
+        .eq("id", step_id)
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def get_process_steps_by_engagement(engagement_id: str) -> list:
+    """Return all process steps for an engagement (used for seed check)."""
+    response = (
+        supabase.table("process_steps")
+        .select("req_id")
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data or []

@@ -29,6 +29,12 @@ from database import (
     get_assets_by_requirement,
     update_asset,
     upload_file_to_storage,
+    create_process_step,
+    get_process_steps,
+    get_process_step,
+    update_process_step,
+    delete_process_step,
+    get_process_steps_by_engagement,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -201,6 +207,38 @@ class ProcessFlowAssignRequest(BaseModel):
     req_id: str
     process_level_2: str
     process_level_3: Optional[str] = None
+
+
+class ProcessStepCreate(BaseModel):
+    step_number: int
+    title: str
+    description: str
+    performer_name: str
+    performer_role: str
+    shape: str = "process"      # start | end | process | decision | document
+    step_type: str = "manual"   # manual | system | agentic
+    duration_minutes: Optional[float] = None
+    systems_used: Optional[List[str]] = []
+    kpis: Optional[Dict] = None
+    is_pain_point: bool = False
+    next_step_id: Optional[str] = None
+    branches: Optional[List[Dict]] = None
+
+
+class ProcessStepUpdate(BaseModel):
+    step_number: Optional[int] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    performer_name: Optional[str] = None
+    performer_role: Optional[str] = None
+    shape: Optional[str] = None
+    step_type: Optional[str] = None
+    duration_minutes: Optional[float] = None
+    systems_used: Optional[List[str]] = None
+    kpis: Optional[Dict] = None
+    is_pain_point: Optional[bool] = None
+    next_step_id: Optional[str] = None
+    branches: Optional[List[Dict]] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1597,3 +1635,330 @@ def assign_process_flow(engagement_id: str, body: ProcessFlowAssignRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return _build_process_flow(requirements, engagement_id)
+
+
+# ── Process Steps (Sprint 6) ───────────────────────────────────────────────────
+
+_VALID_SHAPES = {"start", "end", "process", "decision", "document"}
+_VALID_STEP_TYPES = {"manual", "system", "agentic"}
+
+_STEP_EXTRACT_SYSTEM_PROMPT = """You are a senior business analyst mapping As-Is process flows for SAP S/4HANA implementations.
+
+Given a business requirement and its conversation transcript, extract the As-Is process steps as a structured JSON array.
+
+For each step infer:
+- step_number: integer starting at 1, in execution order
+- title: short action label (max 8 words)
+- description: what actually happens at this step
+- performer_name: the person's name or generic role name who does it
+- performer_role: their job title or function
+- shape: choose from → "start" (first step only), "end" (last step only), "decision" (approval/check/condition), "document" (form/report/record), "process" (default action)
+- step_type: "manual" if done by a human without system, "system" if automated/done in a system, "agentic" if AI-driven
+- duration_minutes: estimated time in minutes if mentioned or inferable, null otherwise
+- systems_used: list of IT systems or tools mentioned for this step (e.g. ["SAP ECC", "Excel"])
+- kpis: object with nullable float fields → {"error_rate_pct": null, "volume_per_month": null, "rework_rate_pct": null}
+- is_pain_point: true if words like "manual", "error-prone", "time-consuming", "tedious", "slow", "broken", "workaround" apply
+- next_step_id: null (will be assigned after creation)
+- branches: for decision nodes only → [{"label": "Approved", "target_step_id": null}, {"label": "Rejected", "target_step_id": null}], else null
+
+Return a JSON array only — no markdown fences, no commentary.
+
+Example shape rules:
+- Approval step → shape="decision", branches=[{"label":"Approved","target_step_id":null},{"label":"Rejected","target_step_id":null}]
+- Filling in a form → shape="document"
+- Starting trigger → shape="start"
+- Final confirmation → shape="end"
+- Everything else → shape="process"
+
+If the transcript is empty or insufficient, generate a realistic 5-step As-Is process based on the requirement title and description."""
+
+
+def _sample_steps_for_requirement(req: dict) -> list:
+    """Generate 5 generic sample process steps based on the requirement title."""
+    title = req.get("title", "Business Process")
+    process = req.get("business_process", "Operations")
+    return [
+        {
+            "step_number": 1,
+            "title": f"Receive {title} request",
+            "description": f"Requestor submits a new {title} request via email or paper form to the responsible team.",
+            "performer_name": "Requestor",
+            "performer_role": "Business User",
+            "shape": "start",
+            "step_type": "manual",
+            "duration_minutes": 10.0,
+            "systems_used": ["Email"],
+            "kpis": {"error_rate_pct": None, "volume_per_month": None, "rework_rate_pct": None},
+            "is_pain_point": False,
+            "next_step_id": None,
+            "branches": None,
+        },
+        {
+            "step_number": 2,
+            "title": "Log and validate request",
+            "description": f"The {process} team logs the request in a spreadsheet and checks for completeness and duplicates.",
+            "performer_name": "Process Owner",
+            "performer_role": "Team Lead",
+            "shape": "process",
+            "step_type": "manual",
+            "duration_minutes": 20.0,
+            "systems_used": ["Excel"],
+            "kpis": {"error_rate_pct": 12.0, "volume_per_month": None, "rework_rate_pct": None},
+            "is_pain_point": True,
+            "next_step_id": None,
+            "branches": None,
+        },
+        {
+            "step_number": 3,
+            "title": "Management approval",
+            "description": "Manager reviews the request and approves or rejects via email. No formal workflow exists.",
+            "performer_name": "Line Manager",
+            "performer_role": "Manager",
+            "shape": "decision",
+            "step_type": "manual",
+            "duration_minutes": 1440.0,
+            "systems_used": ["Email"],
+            "kpis": {"error_rate_pct": None, "volume_per_month": None, "rework_rate_pct": None},
+            "is_pain_point": True,
+            "next_step_id": None,
+            "branches": [
+                {"label": "Approved", "target_step_id": None},
+                {"label": "Rejected", "target_step_id": None},
+            ],
+        },
+        {
+            "step_number": 4,
+            "title": "Process and record outcome",
+            "description": f"The approved {title} is processed and the result is recorded in the relevant system.",
+            "performer_name": "Clerk",
+            "performer_role": "Operations Clerk",
+            "shape": "document",
+            "step_type": "system",
+            "duration_minutes": 30.0,
+            "systems_used": ["ERP System"],
+            "kpis": {"error_rate_pct": None, "volume_per_month": 200.0, "rework_rate_pct": 8.0},
+            "is_pain_point": False,
+            "next_step_id": None,
+            "branches": None,
+        },
+        {
+            "step_number": 5,
+            "title": "Notify requestor of completion",
+            "description": "Requestor is notified by email that the process is complete.",
+            "performer_name": "Process Owner",
+            "performer_role": "Team Lead",
+            "shape": "end",
+            "step_type": "manual",
+            "duration_minutes": 5.0,
+            "systems_used": ["Email"],
+            "kpis": {"error_rate_pct": None, "volume_per_month": None, "rework_rate_pct": None},
+            "is_pain_point": False,
+            "next_step_id": None,
+            "branches": None,
+        },
+    ]
+
+
+@app.get("/requirements/{req_id}/process-steps")
+def list_process_steps(req_id: str, engagement_id: str):
+    try:
+        steps = get_process_steps(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"req_id": req_id, "engagement_id": engagement_id, "total": len(steps), "steps": steps}
+
+
+@app.post("/requirements/{req_id}/process-steps/seed", status_code=201)
+def seed_process_steps(req_id: str, engagement_id: str):
+    """Create 5 sample process steps for a requirement that has no steps yet."""
+    try:
+        existing = get_process_steps(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if existing:
+        return {"req_id": req_id, "seeded": 0, "steps": existing, "message": "Steps already exist"}
+
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    sample = _sample_steps_for_requirement(req)
+    created = []
+    for s in sample:
+        try:
+            step = create_process_step({"req_id": req_id, "engagement_id": engagement_id, **s})
+            if step:
+                created.append(step)
+        except Exception as e:
+            print(f"Failed to seed step {s['step_number']}: {e}")
+
+    return {"req_id": req_id, "seeded": len(created), "steps": created}
+
+
+@app.post("/requirements/{req_id}/process-steps/extract", status_code=201)
+def extract_process_steps(req_id: str, engagement_id: str):
+    """AI-extract As-Is process steps from the requirement's transcript. Clears existing steps first."""
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    transcript = req.get("raw_input") or ""
+    title = req.get("title", "")
+    description = req.get("description", "")
+
+    if not transcript.strip():
+        steps_data = _sample_steps_for_requirement(req)
+    else:
+        provider = get_provider()
+        user_prompt = (
+            f"Requirement title: {title}\n"
+            f"Requirement description: {description}\n\n"
+            f"Conversation transcript:\n{transcript}\n\n"
+            "Extract the As-Is process steps as a JSON array."
+        )
+        try:
+            result = provider.complete(_STEP_EXTRACT_SYSTEM_PROMPT, user_prompt, max_tokens=2048, model=MODEL_SONNET)
+            raw_text = result.get("content", "[]")
+            json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+            if not json_match:
+                raise ValueError("No JSON array in response")
+            steps_data = json.loads(json_match.group())
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI extraction failed: {e}")
+
+    # Clear existing steps for this req
+    try:
+        existing = get_process_steps(req_id, engagement_id)
+        for s in existing:
+            delete_process_step(s["id"], req_id, engagement_id)
+    except Exception as e:
+        print(f"Step cleanup warning (non-fatal): {e}")
+
+    # Validate and persist
+    created = []
+    for i, s in enumerate(steps_data, start=1):
+        shape = s.get("shape", "process")
+        if shape not in _VALID_SHAPES:
+            shape = "process"
+        step_type = s.get("step_type", "manual")
+        if step_type not in _VALID_STEP_TYPES:
+            step_type = "manual"
+        kpis = s.get("kpis") or {}
+        kpis_clean = {
+            "error_rate_pct": kpis.get("error_rate_pct"),
+            "volume_per_month": kpis.get("volume_per_month"),
+            "rework_rate_pct": kpis.get("rework_rate_pct"),
+        }
+        record = {
+            "req_id": req_id,
+            "engagement_id": engagement_id,
+            "step_number": s.get("step_number", i),
+            "title": s.get("title", f"Step {i}"),
+            "description": s.get("description", ""),
+            "performer_name": s.get("performer_name", ""),
+            "performer_role": s.get("performer_role", ""),
+            "shape": shape,
+            "step_type": step_type,
+            "duration_minutes": s.get("duration_minutes"),
+            "systems_used": s.get("systems_used") or [],
+            "kpis": kpis_clean,
+            "is_pain_point": bool(s.get("is_pain_point", False)),
+            "next_step_id": s.get("next_step_id"),
+            "branches": s.get("branches"),
+        }
+        try:
+            step = create_process_step(record)
+            if step:
+                created.append(step)
+        except Exception as e:
+            print(f"Failed to create step {i}: {e}")
+
+    return {"req_id": req_id, "engagement_id": engagement_id, "extracted": len(created), "steps": created}
+
+
+@app.post("/requirements/{req_id}/process-steps", status_code=201)
+def create_step(req_id: str, engagement_id: str, body: ProcessStepCreate):
+    if body.shape not in _VALID_SHAPES:
+        raise HTTPException(status_code=400, detail=f"Invalid shape '{body.shape}'. Must be one of: {sorted(_VALID_SHAPES)}")
+    if body.step_type not in _VALID_STEP_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid step_type '{body.step_type}'. Must be one of: {sorted(_VALID_STEP_TYPES)}")
+    data = body.dict()
+    data["req_id"] = req_id
+    data["engagement_id"] = engagement_id
+    try:
+        step = create_process_step(data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not step:
+        raise HTTPException(status_code=500, detail="Failed to create process step")
+    return step
+
+
+@app.put("/requirements/{req_id}/process-steps/{step_id}")
+def update_step(req_id: str, step_id: str, engagement_id: str, body: ProcessStepUpdate):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    if "shape" in updates and updates["shape"] not in _VALID_SHAPES:
+        raise HTTPException(status_code=400, detail=f"Invalid shape. Must be one of: {sorted(_VALID_SHAPES)}")
+    if "step_type" in updates and updates["step_type"] not in _VALID_STEP_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid step_type. Must be one of: {sorted(_VALID_STEP_TYPES)}")
+    try:
+        step = update_process_step(step_id, req_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not step:
+        raise HTTPException(status_code=404, detail=f"Step {step_id} not found")
+    return step
+
+
+@app.delete("/requirements/{req_id}/process-steps/{step_id}", status_code=204)
+def delete_step(req_id: str, step_id: str, engagement_id: str):
+    try:
+        deleted = delete_process_step(step_id, req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Step {step_id} not found")
+    return None
+
+
+@app.post("/engagement/{engagement_id}/seed-process-steps", status_code=201)
+def seed_all_process_steps(engagement_id: str):
+    """Seed sample process steps for every requirement in the engagement that has none."""
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+        existing_steps = get_process_steps_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    reqs_with_steps = {s["req_id"] for s in existing_steps}
+    seeded_reqs = []
+
+    for req in requirements:
+        req_id = req["req_id"]
+        if req_id in reqs_with_steps:
+            continue
+        sample = _sample_steps_for_requirement(req)
+        count = 0
+        for s in sample:
+            try:
+                step = create_process_step({"req_id": req_id, "engagement_id": engagement_id, **s})
+                if step:
+                    count += 1
+            except Exception as e:
+                print(f"Seed failed for {req_id} step {s['step_number']}: {e}")
+        if count:
+            seeded_reqs.append({"req_id": req_id, "title": req.get("title"), "steps_created": count})
+
+    return {
+        "engagement_id": engagement_id,
+        "requirements_seeded": len(seeded_reqs),
+        "seeded": seeded_reqs,
+    }
