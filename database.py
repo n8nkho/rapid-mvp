@@ -35,12 +35,14 @@ def save_gap_analysis(
     return response.data[0] if response.data else {}
 
 
-def get_results_by_engagement(engagement_id: str) -> list:
+def get_results_by_engagement(engagement_id: str, limit: int = 200) -> list:
+    """Return gap results for engagement, newest first. Capped to avoid slow timeouts."""
     response = (
         supabase.table("gap_results")
         .select("*")
         .eq("engagement_id", engagement_id)
         .order("timestamp", desc=True)
+        .limit(limit)
         .execute()
     )
     return response.data or []
