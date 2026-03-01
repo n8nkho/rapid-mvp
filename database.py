@@ -89,6 +89,11 @@ def create_requirement(
           ADD COLUMN IF NOT EXISTS sign_off_at timestamptz,
           ADD COLUMN IF NOT EXISTS sap_mapping_id text,
           ADD COLUMN IF NOT EXISTS fit_assessment text;
+
+    SQL migration — Sprint 5 process flow columns:
+        ALTER TABLE requirements
+          ADD COLUMN IF NOT EXISTS process_level_2 text,
+          ADD COLUMN IF NOT EXISTS process_level_3 text;
     """
     req_id = _next_req_id(engagement_id)
     record = {

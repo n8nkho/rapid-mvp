@@ -84,7 +84,7 @@ class RequirementCreate(BaseModel):
     stakeholder: Optional[str] = None
     raw_input: Optional[str] = None
     # Phase 1 extended fields
-    business_process: Optional[str] = None         # e.g. Procure-to-Pay, Order-to-Cash
+    business_process: Optional[str] = None         # LOB, e.g. Finance / Sales / Supply Chain
     priority: Optional[str] = "Must-Have"          # Must-Have / Should-Have / Nice-to-Have
     category: Optional[str] = None                 # Automation / Control/Compliance / Reporting / Integration / UX / Data Migration
     kpi_impact: Optional[Dict] = None              # {"metric": "...", "target": "...", "unit": "..."}
@@ -97,6 +97,9 @@ class RequirementCreate(BaseModel):
     sign_off_at: Optional[str] = None
     sap_mapping_id: Optional[str] = None           # nearest scope item ID
     fit_assessment: Optional[str] = None           # Fit-to-Standard / Soft-Gap / Hard-Gap
+    # Sprint 5 process flow fields
+    process_level_2: Optional[str] = None          # e.g. Record to Report, Procure to Pay
+    process_level_3: Optional[str] = None          # e.g. Accounts Payable, General Ledger
 
 class RequirementUpdate(BaseModel):
     status: Optional[str] = None
@@ -118,6 +121,9 @@ class RequirementUpdate(BaseModel):
     sign_off_at: Optional[str] = None
     sap_mapping_id: Optional[str] = None
     fit_assessment: Optional[str] = None
+    # Sprint 5 process flow fields
+    process_level_2: Optional[str] = None
+    process_level_3: Optional[str] = None
 
 class TranscriptExtractRequest(BaseModel):
     engagement_id: str
@@ -186,6 +192,15 @@ class RequirementResponse(BaseModel):
     sign_off_at: Optional[str] = None
     sap_mapping_id: Optional[str] = None
     fit_assessment: Optional[str] = None
+    # Sprint 5 process flow fields
+    process_level_2: Optional[str] = None
+    process_level_3: Optional[str] = None
+
+
+class ProcessFlowAssignRequest(BaseModel):
+    req_id: str
+    process_level_2: str
+    process_level_3: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1490,3 +1505,95 @@ def get_process_hierarchy_flat():
                     "level4": level4,
                 })
     return flat
+
+
+# ── Process Flow (Sprint 5) ────────────────────────────────────────────────────
+
+def _build_process_flow(requirements: list, engagement_id: str) -> dict:
+    """Build the swimlane / edge / stats payload from a list of requirement dicts."""
+    # Group nodes by (lob, level2); requirements without both go to unassigned
+    grouped: Dict[tuple, list] = {}
+    unassigned_nodes: list = []
+
+    for req in requirements:
+        tags = req.get("tags") or []
+        node = {
+            "id": req["req_id"],
+            "label": req.get("title", ""),
+            "tags": tags,
+            "priority": req.get("priority"),
+            "status": req.get("status"),
+            "pain_point": "pain_point" in tags,
+            "secret_sauce": "secret_sauce" in tags,
+            "manual_step": "manual_step" in tags,
+            "process_level_3": req.get("process_level_3"),
+        }
+        lob = req.get("business_process")
+        level2 = req.get("process_level_2")
+        if lob and level2:
+            grouped.setdefault((lob, level2), []).append(node)
+        else:
+            unassigned_nodes.append(node)
+
+    # Build ordered swimlanes
+    swimlanes = [
+        {"lob": lob, "level2": level2, "nodes": nodes}
+        for (lob, level2), nodes in sorted(grouped.items())
+    ]
+    if unassigned_nodes:
+        swimlanes.append({"lob": "Unassigned", "level2": "Unassigned", "nodes": unassigned_nodes})
+
+    # Edges: sequential links between requirements sharing the same level2 group
+    edges: list = []
+    for (_, _), nodes in sorted(grouped.items()):
+        req_ids = [n["id"] for n in nodes]
+        for i in range(len(req_ids) - 1):
+            edges.append({"source": req_ids[i], "target": req_ids[i + 1], "label": "same process"})
+
+    # Stats
+    def _count_tag(tag: str) -> int:
+        return sum(1 for r in requirements if tag in (r.get("tags") or []))
+
+    return {
+        "engagement_id": engagement_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "swimlanes": swimlanes,
+        "edges": edges,
+        "stats": {
+            "total_nodes": len(requirements),
+            "pain_points": _count_tag("pain_point"),
+            "manual_steps": _count_tag("manual_step"),
+            "secret_sauce": _count_tag("secret_sauce"),
+            "unassigned_process": len(unassigned_nodes),
+        },
+    }
+
+
+@app.get("/engagement/{engagement_id}/process-flow")
+def get_process_flow(engagement_id: str):
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return _build_process_flow(requirements, engagement_id)
+
+
+@app.post("/engagement/{engagement_id}/process-flow/assign")
+def assign_process_flow(engagement_id: str, body: ProcessFlowAssignRequest):
+    updates: Dict[str, Any] = {"process_level_2": body.process_level_2}
+    if body.process_level_3 is not None:
+        updates["process_level_3"] = body.process_level_3
+    try:
+        updated = update_requirement(body.req_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{body.req_id} not found in engagement {engagement_id}",
+        )
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return _build_process_flow(requirements, engagement_id)
