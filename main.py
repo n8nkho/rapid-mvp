@@ -2237,6 +2237,45 @@ def list_ricefw(engagement_id: str, type: Optional[str] = None):
     return {"engagement_id": engagement_id, "total": len(items), "items": items}
 
 
+@app.get("/engagement/{engagement_id}/ricefw/export")
+def export_ricefw_excel(engagement_id: str, type: Optional[str] = None):
+    """Download RICEFW inventory for an engagement as an Excel file. Optional type filter: R|I|C|E|F|W."""
+    if type and type.upper() not in _RICEFW_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
+    try:
+        items = get_ricefw_by_engagement(engagement_id, item_type=type.upper() if type else None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RICEFW Inventory"
+    headers = ["id", "engagement_id", "type", "name", "description", "req_id", "status", "created_at"]
+    ws.append(headers)
+    for item in items:
+        ws.append([
+            item.get("id"),
+            item.get("engagement_id"),
+            item.get("type"),
+            item.get("name"),
+            item.get("description") or "",
+            item.get("req_id") or "",
+            item.get("status") or "",
+            item.get("created_at") or "",
+        ])
+
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    suffix = f"_{type}" if type else ""
+    filename = f"{engagement_id}_ricefw{suffix}.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/engagement/{engagement_id}/ricefw", status_code=201)
 def create_ricefw(engagement_id: str, body: RICEFWCreate):
     if body.type.upper() not in _RICEFW_TYPES:
