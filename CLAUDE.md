@@ -1,72 +1,49 @@
-# RAPID MVP — Backend
+# RAPID API — Claude Context
 
-## What this is
-FastAPI backend for RAPID, a two-phase AI-powered SAP S/4HANA implementation tool.
-Deployed on Railway at: https://rapid-mvp-production.up.railway.app
+## Project
+FastAPI backend, Python, deployed on Railway.
+Production URL: https://rapid-mvp-production.up.railway.app
+Frontend: https://rapid-ui-wine.vercel.app
+Run locally: uvicorn main:app --reload --port 8000
 
-## Two-Phase Architecture
-Phase 1 - Requirements Capture (Process Mirror)
-  Capture how the business actually works today before any SAP mapping.
-  Output: structured requirements with tags, stakeholders, source types.
+## CORS
+Allow all origins from https://rapid-ui-wine.vercel.app and localhost:3000.
 
-Phase 2 - Gap Analysis
-  Map validated requirements to SAP S/4HANA Cloud 2602 scope items.
-  Output: scope item matches with confidence, rationale, migration objects.
+## Key Models
+Client, Engagement, Requirement, Conversation, ProcessStep
 
-## Stack
-- Python + FastAPI
-- Claude Haiku via Anthropic SDK for semantic gap analysis
-- Supabase for requirements storage and gap analysis results
-- scope_items.py loaded in-memory at startup (244 SAP scope items, FSD 2602)
+## ProcessStep Schema
+- id (uuid)
+- req_id (foreign key to requirements)
+- engagement_id
+- step_number (int, ordering)
+- title (str)
+- description (str)
+- performer_name (str)
+- performer_role (str)
+- shape: "start" | "end" | "process" | "decision" | "document"
+- step_type: "manual" | "system" | "agentic"
+- duration_minutes (float, nullable)
+- systems_used (list of str)
+- kpis: { error_rate_pct, volume_per_month, rework_rate_pct } (nullable floats)
+- is_pain_point (bool, default false)
+- next_step_id (str, nullable)
+- branches: [{ label: str, target_step_id: s }] (for decision nodes)
+- created_at, updated_at
 
-## Key files
-- main.py — all endpoints
-- providers.py — AnthropicProvider, complete(system_prompt, user_prompt) returns dict with content and tokens_used
-- scope_items.py — 244 SAP scope items, SCOPE_ITEMS list, get_catalogue_text()
-- database.py — all Supabase functions
-- requirements.txt — dependencies
-- Procfile — web: uvicorn main:app --host 0.0.0.0 --port $PORT
+## ProcessStep Endpoints
+- GET    /requirements/{req_id}/process-steps
+- POST   /requirements/{req_id}/process-steps
+- PUT    /requirements/{req_id}/process-steps/{step_id}
+- DELETE /requirements/{req_id}/process-steps/{step_id}
+- POST   /requirements/{req_id}/process-steps/extract
+  → fetch requirement + transcript, call LLM, extract steps as JSON array,
+    infer shapes/branches/performers/pain points, save and return steps.
+  → if no transcript, generate 5 sample steps relevant to requirement title.
 
-## Supabase tables
-requirements:
-  id, req_id (REQ-001...), engagement_id, title, description,
-  source_type (Conversation/Document/Whiteboard/Video/SOP),
-  tags (text array: pain_point/manual_step/secret_sauce/workaround/hand_off),
-  stakeholder, raw_input, status (open/in_progress/analysed/closed), created_at
-
-gap_results:
-  id, engagement_id, req_id, process_description, matches (jsonb), tokens_used, timestamp
-
-## Endpoints
-GET  /health
-GET  /lobs
-GET  /catalogue?lob=
-POST /requirements
-GET  /requirements?engagement_id=
-GET  /requirements/{req_id}?engagement_id=
-PATCH /requirements/{req_id}?engagement_id=
-POST /gap-analysis
-GET  /results?engagement_id=
-GET  /engagement/{engagement_id}/summary
-POST /engagement/{engagement_id}/analyse-all
-POST /requirements/extract-from-transcript
-GET  /engagement/{engagement_id}/process-mirror
-
-## Environment variables
-ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_KEY
-
-## Deploy
-git push origin main — Railway auto-deploys
-Or: railway up
-
-## Testing
-pytest tests/
-curl "https://rapid-mvp-production.up.railway.app/health"
-
-## Rules
-- Never hardcode scope items — always use scope_items.py
-- Supabase requirements table is read/write
-- Supabase gap_results is write-only from gap analysis
-- providers.py complete() always returns dict with content and tokens_used
-- scope_items.py refresh every SAP release Feb/Aug
-- All new endpoints must have error handling and meaningful HTTP status codes
+## Conventions
+- UUID for all IDs
+- Return JSON always
+- Fix all errors before committing
+- Commit format: "feat: ...", "fix: ..."
+- Test endpoints with curl after changes

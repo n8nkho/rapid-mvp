@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 import json
 import os
 import re
+import psycopg2
 from datetime import datetime, timezone
 
 # Import providers and database
@@ -1961,4 +1962,76 @@ def seed_all_process_steps(engagement_id: str):
         "engagement_id": engagement_id,
         "requirements_seeded": len(seeded_reqs),
         "seeded": seeded_reqs,
+    }
+
+
+# ── Admin Migrations ──────────────────────────────────────────────────────────
+
+_PROCESS_STEPS_DDL = """
+CREATE TABLE IF NOT EXISTS process_steps (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  req_id          text NOT NULL,
+  engagement_id   text NOT NULL,
+  step_number     int NOT NULL DEFAULT 1,
+  title           text NOT NULL,
+  description     text,
+  performer_name  text,
+  performer_role  text,
+  shape           text DEFAULT 'process',
+  step_type       text DEFAULT 'manual',
+  duration_minutes float,
+  systems_used    text[],
+  kpis            jsonb,
+  is_pain_point   boolean DEFAULT false,
+  next_step_id    text,
+  branches        jsonb,
+  created_at      timestamptz DEFAULT now(),
+  updated_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_process_steps_req ON process_steps (req_id, engagement_id);
+"""
+
+
+def _get_pg_dsn() -> str:
+    """Build PostgreSQL DSN from Supabase URL and key."""
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_key = os.getenv("SUPABASE_KEY", "")
+    db_url = os.getenv("DATABASE_URL", "")
+    if db_url:
+        return db_url
+    project_ref = supabase_url.split("//")[-1].split(".")[0] if supabase_url else ""
+    # Supabase Transaction Pooler (port 6543) or Direct (port 5432)
+    return (
+        f"postgresql://postgres.{project_ref}:{supabase_key}"
+        f"@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+    )
+
+
+@app.post("/admin/migrate", status_code=200)
+def run_migrations():
+    """Create required tables if they don't exist.
+    Set DATABASE_URL env var to a direct PostgreSQL connection string (e.g., from Supabase dashboard).
+    If not set, returns the SQL to run manually in Supabase SQL Editor.
+    """
+    dsn = _get_pg_dsn()
+    if dsn:
+        try:
+            conn = psycopg2.connect(dsn, connect_timeout=15)
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(_PROCESS_STEPS_DDL)
+            cur.close()
+            conn.close()
+            return {"status": "ok", "message": "process_steps table ensured"}
+        except Exception as e:
+            return {
+                "status": "manual_required",
+                "error": str(e),
+                "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
+                "sql": _PROCESS_STEPS_DDL.strip(),
+            }
+    return {
+        "status": "manual_required",
+        "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
+        "sql": _PROCESS_STEPS_DDL.strip(),
     }
