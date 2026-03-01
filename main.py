@@ -1243,7 +1243,7 @@ async def upload_asset(
         "engagement_id": engagement_id,
         "file_name": file_name,
         "file_type": ext,
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if uploaded_by:
         asset_data["uploaded_by"] = uploaded_by
