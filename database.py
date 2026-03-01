@@ -245,3 +245,75 @@ def get_engagement_with_client(engagement_id: str) -> dict:
     client_id = eng.get("client_id")
     client = get_client(client_id) if client_id else {}
     return {**eng, "client": client or {}}
+
+
+# ── Assets ────────────────────────────────────────────────────────────────────
+
+def _next_asset_id(engagement_id: str) -> str:
+    """Generate next sequential AST-XXX id, unique within an engagement."""
+    response = (
+        supabase.table("assets")
+        .select("asset_id")
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        try:
+            nums.append(int(row["asset_id"].split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"AST-{max(nums, default=0) + 1:03d}"
+
+
+def create_asset(data: dict) -> dict:
+    engagement_id = data.get("engagement_id")
+    asset_id = _next_asset_id(engagement_id)
+    record = {"asset_id": asset_id, **data}
+    response = supabase.table("assets").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_assets_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("assets")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("asset_id")
+        .execute()
+    )
+    return response.data or []
+
+
+def get_assets_by_requirement(req_id: str, engagement_id: str) -> list:
+    response = (
+        supabase.table("assets")
+        .select("*")
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .order("asset_id")
+        .execute()
+    )
+    return response.data or []
+
+
+def update_asset(asset_id: str, updates: dict) -> dict:
+    response = (
+        supabase.table("assets")
+        .update(updates)
+        .eq("asset_id", asset_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def upload_file_to_storage(
+    engagement_id: str, asset_id: str, file_name: str, file_bytes: bytes, content_type: str
+) -> str:
+    """Upload file to rapid-assets Supabase Storage bucket and return the public URL."""
+    path = f"{engagement_id}/{asset_id}/{file_name}"
+    supabase.storage.from_("rapid-assets").upload(
+        path, file_bytes, {"content-type": content_type}
+    )
+    return supabase.storage.from_("rapid-assets").get_public_url(path)

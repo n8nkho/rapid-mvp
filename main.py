@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -24,6 +24,11 @@ from database import (
     get_engagement,
     list_engagements,
     get_engagement_with_client,
+    create_asset,
+    get_assets_by_engagement,
+    get_assets_by_requirement,
+    update_asset,
+    upload_file_to_storage,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -148,6 +153,13 @@ class EngagementCreate(BaseModel):
 class SignOffRequest(BaseModel):
     level: str      # "sme" or "owner"
     signed_by: str
+
+class AssetUpdate(BaseModel):
+    req_id: Optional[str] = None
+    process_level_2: Optional[str] = None
+    process_level_3: Optional[str] = None
+    confirmed: Optional[bool] = None
+    suggested_tags: Optional[List[str]] = None
 
 class RequirementResponse(BaseModel):
     req_id: str
@@ -1178,3 +1190,134 @@ def get_kpi_summary(engagement_id: str):
         "total_with_kpi": total_with_kpi,
         "by_process": by_process,
     }
+
+
+# ── Assets ────────────────────────────────────────────────────────────────────
+
+_SUPPORTED_EXTENSIONS = {
+    "pdf", "docx", "xlsx", "png", "jpg", "jpeg",
+    "mp3", "mp4", "wav", "mov", "txt",
+}
+
+_CONTENT_TYPE_MAP = {
+    "pdf":  "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "png":  "image/png",
+    "jpg":  "image/jpeg",
+    "jpeg": "image/jpeg",
+    "mp3":  "audio/mpeg",
+    "mp4":  "video/mp4",
+    "wav":  "audio/wav",
+    "mov":  "video/quicktime",
+    "txt":  "text/plain",
+}
+
+
+@app.post("/assets/upload", status_code=201)
+async def upload_asset(
+    file: UploadFile = File(...),
+    engagement_id: str = Form(...),
+    uploaded_by: Optional[str] = Form(None),
+    req_id: Optional[str] = Form(None),
+    process_level_2: Optional[str] = Form(None),
+    process_level_3: Optional[str] = Form(None),
+):
+    file_name = file.filename or "unnamed"
+    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    if ext not in _SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '.{ext}'. Allowed: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}",
+        )
+
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}")
+
+    content_type = _CONTENT_TYPE_MAP[ext]
+
+    # Build asset record (asset_id assigned inside create_asset via _next_asset_id)
+    asset_data: Dict[str, Any] = {
+        "engagement_id": engagement_id,
+        "file_name": file_name,
+        "file_type": ext,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if uploaded_by:
+        asset_data["uploaded_by"] = uploaded_by
+    if req_id:
+        asset_data["req_id"] = req_id
+    if process_level_2:
+        asset_data["process_level_2"] = process_level_2
+    if process_level_3:
+        asset_data["process_level_3"] = process_level_3
+
+    # Extract text for plain-text files
+    if ext == "txt":
+        try:
+            asset_data["extracted_text"] = file_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    # Create DB record first to get asset_id, then upload to storage
+    try:
+        asset = create_asset(asset_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create asset record: {e}")
+
+    if not asset:
+        raise HTTPException(status_code=500, detail="Failed to create asset record")
+
+    asset_id = asset["asset_id"]
+
+    try:
+        storage_url = upload_file_to_storage(engagement_id, asset_id, file_name, file_bytes, content_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
+
+    try:
+        asset = update_asset(asset_id, {"storage_url": storage_url})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save storage URL: {e}")
+
+    return {
+        "asset_id": asset_id,
+        "file_name": file_name,
+        "file_type": ext,
+        "storage_url": storage_url,
+        "engagement_id": engagement_id,
+    }
+
+
+@app.get("/assets")
+def list_assets(engagement_id: str):
+    try:
+        assets = get_assets_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"engagement_id": engagement_id, "total": len(assets), "assets": assets}
+
+
+@app.get("/assets/requirement/{req_id}")
+def list_assets_for_requirement(req_id: str, engagement_id: str):
+    try:
+        assets = get_assets_by_requirement(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"req_id": req_id, "engagement_id": engagement_id, "total": len(assets), "assets": assets}
+
+
+@app.patch("/assets/{asset_id}")
+def patch_asset(asset_id: str, body: AssetUpdate):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    try:
+        asset = update_asset(asset_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"{asset_id} not found")
+    return asset
