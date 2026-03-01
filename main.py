@@ -39,6 +39,10 @@ from database import (
     update_process_step,
     delete_process_step,
     get_process_steps_by_engagement,
+    create_ricefw_item,
+    get_ricefw_by_engagement,
+    update_ricefw_item,
+    delete_ricefw_item,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -243,6 +247,23 @@ class ProcessStepUpdate(BaseModel):
     is_pain_point: Optional[bool] = None
     next_step_id: Optional[str] = None
     branches: Optional[List[Dict]] = None
+
+
+# Sprint 7: RICEFW = Reports, Interfaces, Conversions, Enhancements, Forms, Workflows
+class RICEFWCreate(BaseModel):
+    type: str       # R | I | C | E | F | W
+    name: str
+    description: Optional[str] = None
+    req_id: Optional[str] = None
+    status: Optional[str] = "identified"
+
+
+class RICEFWUpdate(BaseModel):
+    type: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    req_id: Optional[str] = None
+    status: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2198,6 +2219,79 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
     }
 
 
+# ── RICEFW Customisation Inventory (Sprint 7) ──────────────────────────────────
+
+_RICEFW_TYPES = {"R", "I", "C", "E", "F", "W"}
+_RICEFW_STATUSES = {"identified", "approved", "in_development", "delivered", "cancelled"}
+
+
+@app.get("/engagement/{engagement_id}/ricefw")
+def list_ricefw(engagement_id: str, type: Optional[str] = None):
+    """List RICEFW customisation items for an engagement. type filter: R | I | C | E | F | W."""
+    if type and type.upper() not in _RICEFW_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
+    try:
+        items = get_ricefw_by_engagement(engagement_id, type=type.upper() if type else None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"engagement_id": engagement_id, "total": len(items), "items": items}
+
+
+@app.post("/engagement/{engagement_id}/ricefw", status_code=201)
+def create_ricefw(engagement_id: str, body: RICEFWCreate):
+    if body.type.upper() not in _RICEFW_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
+    if body.status and body.status.lower() not in _RICEFW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(_RICEFW_STATUSES))}")
+    try:
+        item = create_ricefw_item(
+            engagement_id=engagement_id,
+            item_type=body.type.upper(),
+            name=body.name,
+            description=body.description,
+            req_id=body.req_id,
+            status=(body.status or "identified").lower(),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not item:
+        raise HTTPException(status_code=500, detail="Failed to create RICEFW item")
+    return item
+
+
+@app.patch("/engagement/{engagement_id}/ricefw/{item_id}")
+def update_ricefw(engagement_id: str, item_id: str, body: RICEFWUpdate):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    if "type" in updates and updates["type"].upper() not in _RICEFW_TYPES:
+        raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
+    if "status" in updates and updates["status"].lower() not in _RICEFW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(_RICEFW_STATUSES))}")
+    if "type" in updates:
+        updates["type"] = updates["type"].upper()
+    if "status" in updates:
+        updates["status"] = updates["status"].lower()
+    try:
+        item = update_ricefw_item(item_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not item:
+        raise HTTPException(status_code=404, detail="RICEFW item not found")
+    return item
+
+
+@app.delete("/engagement/{engagement_id}/ricefw/{item_id}", status_code=204)
+def delete_ricefw(engagement_id: str, item_id: str):
+    try:
+        deleted = delete_ricefw_item(item_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="RICEFW item not found")
+    return None
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
@@ -2222,6 +2316,22 @@ CREATE TABLE IF NOT EXISTS process_steps (
   updated_at      timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_process_steps_req ON process_steps (req_id, engagement_id);
+"""
+
+_RICEFW_DDL = """
+CREATE TABLE IF NOT EXISTS ricefw_inventory (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id   text NOT NULL,
+  req_id          text,
+  type            text NOT NULL,
+  name            text NOT NULL,
+  description     text,
+  status          text DEFAULT 'identified',
+  created_at      timestamptz DEFAULT now(),
+  updated_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ricefw_engagement ON ricefw_inventory (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_ricefw_type ON ricefw_inventory (engagement_id, type);
 """
 
 
@@ -2253,18 +2363,19 @@ def run_migrations():
             conn.autocommit = True
             cur = conn.cursor()
             cur.execute(_PROCESS_STEPS_DDL)
+            cur.execute(_RICEFW_DDL)
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps table ensured"}
+            return {"status": "ok", "message": "process_steps and ricefw_inventory tables ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": _PROCESS_STEPS_DDL.strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": _PROCESS_STEPS_DDL.strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL).strip(),
     }

@@ -41,6 +41,13 @@ Client, Engagement, Requirement, Conversation, ProcessStep
     infer shapes/branches/performers/pain points, save and return steps.
   → if no transcript, generate 5 sample steps relevant to requirement title.
 
+## RICEFW Customisation Inventory (Sprint 7)
+- Table: ricefw_inventory (id, engagement_id, req_id, type, name, description, status, created_at, updated_at)
+- type: R | I | C | E | F | W (Reports, Interfaces, Conversions, Enhancements, Forms, Workflows)
+- status: identified | approved | in_development | delivered | cancelled
+- Endpoints: GET/POST /engagement/{engagement_id}/ricefw, PATCH/DELETE /engagement/{engagement_id}/ricefw/{item_id}
+- Run POST /admin/migrate (or SQL in Supabase) to create ricefw_inventory.
+
 ## Conventions
 - UUID for all IDs
 - Return JSON always

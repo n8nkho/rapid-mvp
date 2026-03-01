@@ -426,3 +426,74 @@ def get_process_steps_by_engagement(engagement_id: str) -> list:
         .execute()
     )
     return response.data or []
+
+
+# ── RICEFW Customisation Inventory (Sprint 7) ──────────────────────────────────
+#
+# SQL migration — run once in Supabase SQL editor:
+#
+#   CREATE TABLE IF NOT EXISTS ricefw_inventory (
+#     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+#     engagement_id   text NOT NULL,
+#     req_id          text,
+#     type            text NOT NULL,
+#     name            text NOT NULL,
+#     description     text,
+#     status          text DEFAULT 'identified',
+#     created_at      timestamptz DEFAULT now(),
+#     updated_at      timestamptz DEFAULT now()
+#   );
+#   CREATE INDEX IF NOT EXISTS idx_ricefw_engagement ON ricefw_inventory (engagement_id);
+#   CREATE INDEX IF NOT EXISTS idx_ricefw_type ON ricefw_inventory (engagement_id, type);
+
+
+import uuid as _uuid_module
+
+
+def create_ricefw_item(engagement_id: str, item_type: str, name: str, description: str = None, req_id: str = None, status: str = "identified") -> dict:
+    """item_type: R | I | C | E | F | W (Reports, Interfaces, Conversions, Enhancements, Forms, Workflows)."""
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": str(_uuid_module.uuid4()),
+        "engagement_id": engagement_id,
+        "type": item_type,
+        "name": name,
+        "description": description or "",
+        "status": status,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if req_id is not None:
+        record["req_id"] = req_id
+    response = supabase.table("ricefw_inventory").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_ricefw_by_engagement(engagement_id: str, item_type: str = None) -> list:
+    query = supabase.table("ricefw_inventory").select("*").eq("engagement_id", engagement_id).order("type").order("name")
+    if item_type:
+        query = query.eq("type", item_type)
+    return query.execute().data or []
+
+
+def update_ricefw_item(item_id: str, engagement_id: str, updates: dict) -> dict:
+    updates = {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}
+    response = (
+        supabase.table("ricefw_inventory")
+        .update(updates)
+        .eq("id", item_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def delete_ricefw_item(item_id: str, engagement_id: str) -> bool:
+    response = (
+        supabase.table("ricefw_inventory")
+        .delete()
+        .eq("id", item_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
