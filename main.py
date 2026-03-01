@@ -1321,3 +1321,172 @@ def patch_asset(asset_id: str, body: AssetUpdate):
     if not asset:
         raise HTTPException(status_code=404, detail=f"{asset_id} not found")
     return asset
+
+
+# ── Process Hierarchy (Sprint 4) ───────────────────────────────────────────────
+
+_PROCESS_HIERARCHY: Dict[str, Dict[str, Dict[str, List[str]]]] = {
+    "Finance": {
+        "Record to Report": {
+            "General Ledger":       ["Journal Entry", "Period Close", "Financial Statements"],
+            "Accounts Payable":     ["Invoice Entry", "Payment Run", "Vendor Reconciliation"],
+            "Accounts Receivable":  ["Customer Invoice", "Cash Application", "Dunning"],
+            "Asset Accounting":     ["Asset Acquisition", "Depreciation Run", "Asset Retirement"],
+            "Tax Compliance":       ["Tax Return", "Tax Reporting", "Withholding Tax"],
+            "Period Close":         ["Month-End Close", "Year-End Close", "Accruals"],
+            "Intercompany":         ["Intercompany Billing", "Intercompany Reconciliation", "Elimination"],
+            "Treasury":             ["Bank Account Management", "Cash Position", "Liquidity Planning"],
+            "Cash Management":      ["Cash Flow Forecast", "Bank Statement", "Payment Advice"],
+        },
+        "Management Accounting": {
+            "Cost Center Accounting":    ["Cost Allocation", "Assessment", "Distribution"],
+            "Internal Orders":           ["Order Settlement", "Budget Monitoring", "Cost Collection"],
+            "Profit Center":             ["Profit Center Assignment", "Transfer Pricing", "Reporting"],
+            "Product Costing":           ["Standard Cost Estimate", "Actual Costing", "Variance Analysis"],
+            "Profitability Analysis":    ["Contribution Margin", "Segment Reporting", "CO-PA Settlement"],
+            "Planning and Budgeting":    ["Annual Budget", "Rolling Forecast", "Plan Upload"],
+        },
+        "Group Reporting": {
+            "Legal Consolidation":      ["Consolidation Entry", "Minority Interest", "Statutory Report"],
+            "Management Consolidation": ["Management Report", "Segment Elimination", "Interunit Reconciliation"],
+        },
+    },
+    "Sourcing and Procurement": {
+        "Procure to Pay": {
+            "Purchase Requisition": ["PR Creation", "PR Approval", "PR Conversion"],
+            "Purchase Order":       ["PO Creation", "PO Approval", "PO Amendment"],
+            "Goods Receipt":        ["GR Posting", "Quality Inspection", "Tolerance Check"],
+            "Invoice Verification": ["Invoice Entry", "3-Way Match", "Exception Handling"],
+            "Supplier Payment":     ["Payment Proposal", "Payment Run", "Bank Transfer"],
+        },
+        "Supplier Management": {
+            "Supplier Evaluation":    ["Scorecard", "KPI Tracking", "Audit"],
+            "Supplier Qualification": ["Onboarding", "Risk Assessment", "Certification"],
+            "Contract Management":    ["Contract Creation", "Contract Renewal", "Compliance Monitoring"],
+        },
+        "Sourcing": {
+            "RFQ":          ["RFQ Creation", "Supplier Invitation", "Response Collection"],
+            "Bid Evaluation": ["Price Comparison", "Technical Evaluation", "Scoring"],
+            "Award":        ["Award Decision", "Contract Award", "PO Creation"],
+        },
+    },
+    "Sales": {
+        "Order to Cash": {
+            "Quotation":    ["Quotation Creation", "Pricing", "Approval"],
+            "Sales Order":  ["Order Entry", "Order Confirmation", "Credit Check"],
+            "Delivery":     ["Picking", "Packing", "Goods Issue"],
+            "Goods Issue":  ["Stock Reduction", "Delivery Completion", "Shipment"],
+            "Billing":      ["Invoice Creation", "Revenue Recognition", "Tax Calculation"],
+            "Cash Collection": ["Payment Receipt", "Bank Reconciliation", "Cash Application"],
+        },
+        "Customer Management": {
+            "Credit Management": ["Credit Limit", "Credit Check", "Risk Classification"],
+            "Returns":           ["Return Order", "Goods Receipt", "Credit Memo"],
+            "Complaints":        ["Complaint Entry", "Root Cause Analysis", "Resolution"],
+            "Rebates":           ["Rebate Agreement", "Accrual", "Settlement"],
+        },
+        "Contract Management": {
+            "Customer Contracts":    ["Contract Creation", "Renewal", "Termination"],
+            "Subscription Management": ["Subscription Order", "Billing Schedule", "Renewal"],
+        },
+    },
+    "Supply Chain": {
+        "Inventory Management": {
+            "Goods Movement":    ["Goods Issue", "Goods Receipt", "Transfer Posting"],
+            "Stock Transfer":    ["STO Creation", "Delivery", "Goods Receipt"],
+            "Physical Inventory": ["Inventory Count", "Difference Posting", "Count Document"],
+            "Batch Management":  ["Batch Creation", "Batch Classification", "Shelf Life"],
+        },
+        "Warehouse Management": {
+            "Inbound Processing":  ["Putaway", "Goods Receipt", "Deconsolidation"],
+            "Outbound Processing": ["Pick", "Pack", "Ship"],
+            "Internal Warehouse":  ["Stock Transfer", "Replenishment", "Inventory"],
+            "Yard Management":     ["Truck Arrival", "Door Assignment", "Departure"],
+        },
+        "Transportation": {
+            "Freight Order":     ["Freight Order Creation", "Carrier Assignment", "Execution"],
+            "Carrier Selection": ["Rate Comparison", "Tender", "Award"],
+            "Freight Settlement": ["Freight Cost", "Invoice Verification", "Payment"],
+        },
+        "Demand and Supply Planning": {
+            "Demand Forecasting": ["Statistical Forecast", "Consensus Demand", "Adjustment"],
+            "MRP":               ["MRP Run", "Planned Order", "Exception Messages"],
+            "Supply Planning":   ["Supply Network", "Heuristics", "Optimizer"],
+            "ATP":               ["ATP Check", "Backorder Processing", "Confirmation"],
+        },
+    },
+    "Manufacturing": {
+        "Plan to Produce": {
+            "Production Order":         ["Order Creation", "Release", "Confirmation"],
+            "Process Order":            ["Batch Production", "Process Instruction", "GR"],
+            "Repetitive Manufacturing": ["Rate-Based Planning", "Backflush", "Reporting"],
+            "Kanban":                   ["Kanban Signal", "Replenishment", "Status Update"],
+        },
+        "Quality Management": {
+            "Inspection Planning": ["Inspection Plan", "Sampling Procedure", "Characteristic"],
+            "Inspection Lot":      ["Lot Creation", "Sample Drawing", "Results Recording"],
+            "Usage Decision":      ["Acceptance", "Rejection", "Follow-Up Action"],
+            "Defect Recording":    ["Defect Notification", "Root Cause", "CAPA"],
+        },
+        "Engineering": {
+            "BOM Management":    ["BOM Creation", "BOM Change", "Validity"],
+            "Routing":           ["Operation", "Work Center", "Standard Values"],
+            "Engineering Change": ["Change Order", "Revision Level", "Implementation"],
+        },
+    },
+    "Asset Management": {
+        "Maintain to Operate": {
+            "Preventive Maintenance":  ["Maintenance Plan", "Scheduling", "Work Order"],
+            "Corrective Maintenance":  ["Breakdown Notification", "Repair Order", "Completion"],
+            "Predictive Maintenance":  ["Condition Monitoring", "Alert", "Predictive Work Order"],
+            "Calibration":             ["Calibration Plan", "Measurement", "Certificate"],
+        },
+        "Asset Lifecycle": {
+            "Asset Acquisition": ["Asset Creation", "Capitalization", "Settlement"],
+            "Depreciation":      ["Depreciation Run", "Adjustment", "Reporting"],
+            "Asset Retirement":  ["Retirement Posting", "Disposal", "Write-off"],
+        },
+    },
+    "Human Resources": {
+        "Hire to Retire": {
+            "Recruitment":    ["Job Posting", "Application Review", "Offer"],
+            "Onboarding":     ["New Hire Setup", "Equipment", "Training"],
+            "Time Management": ["Time Recording", "Approval", "Absence"],
+            "Payroll":        ["Payroll Run", "Posting", "Pay Slip"],
+            "Offboarding":    ["Exit Interview", "Clearance", "Final Settlement"],
+        },
+        "Talent Management": {
+            "Performance":   ["Goal Setting", "Mid-Year Review", "Annual Appraisal"],
+            "Learning":      ["Course Assignment", "Completion", "Certification"],
+            "Compensation":  ["Salary Review", "Bonus", "Equity"],
+        },
+    },
+    "Professional Services": {
+        "Project to Cash": {
+            "Project Planning":   ["WBS", "Scheduling", "Budgeting"],
+            "Resource Management": ["Resource Request", "Assignment", "Utilization"],
+            "Time Recording":     ["Timesheet", "Approval", "Cost Posting"],
+            "Project Billing":    ["Milestone Billing", "T&M Billing", "Revenue Recognition"],
+        },
+    },
+}
+
+
+@app.get("/process-hierarchy")
+def get_process_hierarchy():
+    return _PROCESS_HIERARCHY
+
+
+@app.get("/process-hierarchy/flat")
+def get_process_hierarchy_flat():
+    flat = []
+    for lob, level2_map in _PROCESS_HIERARCHY.items():
+        for level2, level3_map in level2_map.items():
+            for level3, level4 in level3_map.items():
+                flat.append({
+                    "lob": lob,
+                    "level2": level2,
+                    "level3": level3,
+                    "level4": level4,
+                })
+    return flat
