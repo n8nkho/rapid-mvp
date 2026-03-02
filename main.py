@@ -2365,6 +2365,52 @@ def seed_all_process_steps(engagement_id: str):
     }
 
 
+_SYNTHETIC_REQUIREMENTS = [
+    {"title": "Vendor invoice posting and three-way match", "description": "System must support automatic matching of PO, GR and invoice. Tolerance limits configurable by company code.", "business_process": "Procure-to-Pay", "priority": "Must-Have", "category": "Automation"},
+    {"title": "Customer credit check before order release", "description": "Credit limit check at order entry and release. Block or warn based on configurable rules.", "business_process": "Order-to-Cash", "priority": "Must-Have", "category": "Control/Compliance"},
+    {"title": "Monthly closing and period-end reporting", "description": "Support period-end close with automatic accruals and reporting package for management.", "business_process": "Record-to-Report", "priority": "Must-Have", "category": "Reporting"},
+    {"title": "MRP run and planned order conversion", "description": "Run MRP for finished and semi-finished materials; convert planned orders to production orders with capacity check.", "business_process": "Plan-to-Produce", "priority": "Must-Have", "category": "Automation"},
+    {"title": "Employee onboarding and role provisioning", "description": "Onboard new hires with role assignment and system access request workflow.", "business_process": "Hire-to-Retire", "priority": "Should-Have", "category": "Integration"},
+    {"title": "Intercompany sales and purchase reconciliation", "description": "Automatic IC billing and reconciliation; eliminate manual matching.", "business_process": "Record-to-Report", "priority": "Should-Have", "category": "Automation"},
+    {"title": "Approval workflow for purchase requisitions", "description": "Multi-level approval by amount and commodity; delegation when approver absent.", "business_process": "Procure-to-Pay", "priority": "Must-Have", "category": "Control/Compliance"},
+    {"title": "Revenue recognition per IFRS 15", "description": "Support performance obligation and allocation; revenue recognition schedule by contract.", "business_process": "Record-to-Report", "priority": "Must-Have", "category": "Reporting"},
+]
+
+
+@router.post("/engagement/{engagement_id}/seed-synthetic", status_code=201)
+def seed_synthetic_requirements(engagement_id: str):
+    """Seed synthetic requirements for demo and E2E testing. Engagement must exist."""
+    try:
+        eng = get_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    created = []
+    for item in _SYNTHETIC_REQUIREMENTS:
+        try:
+            rec = create_requirement(
+                engagement_id=engagement_id,
+                title=item["title"],
+                description=item["description"],
+                business_process=item.get("business_process"),
+                priority=item.get("priority"),
+                category=item.get("category"),
+                status="open",
+                tags=[],
+            )
+            if rec:
+                created.append({"req_id": rec.get("req_id"), "title": rec.get("title")})
+        except Exception as e:
+            logger.warning("Seed requirement failed: %s", e)
+    return {
+        "engagement_id": engagement_id,
+        "created": len(created),
+        "requirements": created,
+    }
+
+
 # ── Excel Upload / Download for Requirements (Sprint 6) ────────────────────────
 
 _EXCEL_TAGS_ALLOWED = {"pain_point", "manual_step", "secret_sauce", "workaround", "hand_off"}

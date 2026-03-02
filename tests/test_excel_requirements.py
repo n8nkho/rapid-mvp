@@ -12,7 +12,7 @@ from openpyxl import Workbook, load_workbook
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import app  # noqa: E402
-
+from tests.conftest import API_PREFIX
 
 ENGAGEMENT = "eng-excel-001"
 
@@ -46,7 +46,7 @@ class TestExportExcel:
             _make_req("REQ-002", tags=[]),
         ]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/requirements/export")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/requirements/export")
 
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith(
@@ -62,7 +62,8 @@ class TestExportExcel:
 
         rows = list(ws.iter_rows(min_row=2, values_only=True))
         assert rows[0][0] == "REQ-001"
-        assert "pain_point" in (rows[0][7] or "")
+        # tags column index: req_id=0, reference_id=1, engagement_id=2, title=3, description=4, business_process=5, priority=6, category=7, tags=8
+        assert "pain_point" in (rows[0][8] or "")
 
 
 class TestImportExcel:
@@ -112,7 +113,7 @@ class TestImportExcel:
             patch("main.create_requirement", return_value=created) as mock_create,
         ):
             resp = client.post(
-                f"/engagement/{ENGAGEMENT}/requirements/import",
+                f"{API_PREFIX}/engagement/{ENGAGEMENT}/requirements/import",
                 files={
                     "file": (
                         "reqs.xlsx",
@@ -154,7 +155,7 @@ class TestImportExcel:
             patch("main.update_requirement", return_value=updated) as mock_update,
         ):
             resp = client.post(
-                f"/engagement/{ENGAGEMENT}/requirements/import",
+                f"{API_PREFIX}/engagement/{ENGAGEMENT}/requirements/import",
                 files={
                     "file": (
                         "reqs.xlsx",
@@ -179,7 +180,7 @@ class TestImportExcel:
     def test_import_rejects_non_excel(self):
         client = _client()
         resp = client.post(
-            f"/engagement/{ENGAGEMENT}/requirements/import",
+            f"{API_PREFIX}/engagement/{ENGAGEMENT}/requirements/import",
             files={"file": ("reqs.csv", b"not excel", "text/csv")},
         )
         assert resp.status_code == 400

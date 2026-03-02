@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import app  # noqa: E402 — conftest.py has already set env vars
+from tests.conftest import API_PREFIX
 
 # ── Fixtures / helpers ─────────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ class TestSummary:
             patch("main.get_requirements_by_engagement", return_value=SAMPLE_REQS),
             patch("main.get_results_by_engagement", return_value=SAMPLE_GAP_RESULTS),
         ):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/summary")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/summary")
         assert resp.status_code == 200
         data = resp.json()
         assert data["engagement_id"] == ENGAGEMENT
@@ -111,7 +112,7 @@ class TestSummary:
             patch("main.get_requirements_by_engagement", return_value=[]),
             patch("main.get_results_by_engagement", return_value=[]),
         ):
-            resp = client_live.get(f"/engagement/empty-eng/summary")
+            resp = client_live.get(f"{API_PREFIX}/engagement/empty-eng/summary")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_requirements"] == 0
@@ -120,9 +121,12 @@ class TestSummary:
 
     def test_db_error_returns_500(self, client_live):
         with patch("main.get_requirements_by_engagement", side_effect=Exception("DB down")):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/summary")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/summary")
         assert resp.status_code == 500
-        assert "DB down" in resp.json()["detail"]
+        data = resp.json()
+        # 5xx handler returns generic message (no internal detail leak)
+        assert "internal error" in data["detail"].lower()
+        assert "request_id" in data
 
 
 # ── POST /engagement/{id}/analyse-all ─────────────────────────────────────────
@@ -144,7 +148,7 @@ class TestAnalyseAll:
             patch("main.save_gap_analysis"),
             patch("main.update_requirement"),
         ):
-            resp = client_live.post(f"/engagement/{ENGAGEMENT}/analyse-all")
+            resp = client_live.post(f"{API_PREFIX}/engagement/{ENGAGEMENT}/analyse-all")
         assert resp.status_code == 200
         data = resp.json()
         assert data["processed"] == len(open_reqs)
@@ -156,7 +160,7 @@ class TestAnalyseAll:
     def test_no_open_requirements(self, client_live):
         all_analysed = [{**r, "status": "analysed"} for r in SAMPLE_REQS]
         with patch("main.get_requirements_by_engagement", return_value=all_analysed):
-            resp = client_live.post(f"/engagement/{ENGAGEMENT}/analyse-all")
+            resp = client_live.post(f"{API_PREFIX}/engagement/{ENGAGEMENT}/analyse-all")
         assert resp.status_code == 200
         data = resp.json()
         assert data["processed"] == 0
@@ -164,7 +168,7 @@ class TestAnalyseAll:
 
     def test_db_error_returns_500(self, client_live):
         with patch("main.get_requirements_by_engagement", side_effect=Exception("timeout")):
-            resp = client_live.post(f"/engagement/{ENGAGEMENT}/analyse-all")
+            resp = client_live.post(f"{API_PREFIX}/engagement/{ENGAGEMENT}/analyse-all")
         assert resp.status_code == 500
 
     def test_top_match_in_result(self, client_live):
@@ -174,7 +178,7 @@ class TestAnalyseAll:
             patch("main.save_gap_analysis"),
             patch("main.update_requirement"),
         ):
-            resp = client_live.post(f"/engagement/{ENGAGEMENT}/analyse-all")
+            resp = client_live.post(f"{API_PREFIX}/engagement/{ENGAGEMENT}/analyse-all")
         data = resp.json()
         assert data["results"][0]["top_match_id"] == "J45"
 
@@ -230,7 +234,7 @@ class TestExtractFromTranscript:
             patch("main.get_provider", return_value=self._mock_provider()),
             patch("main.create_requirement", side_effect=side_effects),
         ):
-            resp = client_live.post("/requirements/extract-from-transcript", json={
+            resp = client_live.post(f"{API_PREFIX}/requirements/extract-from-transcript", json={
                 "engagement_id": ENGAGEMENT,
                 "stakeholder": "CFO",
                 "transcript_text": self.TRANSCRIPT,
@@ -259,7 +263,7 @@ class TestExtractFromTranscript:
             patch("main.get_provider", return_value=provider),
             patch("main.create_requirement", return_value=created) as mock_create,
         ):
-            resp = client_live.post("/requirements/extract-from-transcript", json={
+            resp = client_live.post(f"{API_PREFIX}/requirements/extract-from-transcript", json={
                 "engagement_id": ENGAGEMENT,
                 "stakeholder": "User",
                 "transcript_text": "some transcript",
@@ -276,7 +280,7 @@ class TestExtractFromTranscript:
             patch("main.get_provider", return_value=provider),
             patch("main.create_requirement") as mock_create,
         ):
-            resp = client_live.post("/requirements/extract-from-transcript", json={
+            resp = client_live.post(f"{API_PREFIX}/requirements/extract-from-transcript", json={
                 "engagement_id": ENGAGEMENT,
                 "stakeholder": "User",
                 "transcript_text": "nothing useful here",
@@ -289,7 +293,7 @@ class TestExtractFromTranscript:
         provider = MagicMock()
         provider.complete.side_effect = Exception("API down")
         with patch("main.get_provider", return_value=provider):
-            resp = client_live.post("/requirements/extract-from-transcript", json={
+            resp = client_live.post(f"{API_PREFIX}/requirements/extract-from-transcript", json={
                 "engagement_id": ENGAGEMENT,
                 "stakeholder": "User",
                 "transcript_text": "some text",
@@ -297,7 +301,7 @@ class TestExtractFromTranscript:
         assert resp.status_code == 500
 
     def test_missing_fields_returns_422(self, client_live):
-        resp = client_live.post("/requirements/extract-from-transcript", json={
+        resp = client_live.post(f"{API_PREFIX}/requirements/extract-from-transcript", json={
             "engagement_id": ENGAGEMENT,
             # missing stakeholder and transcript_text
         })
@@ -309,7 +313,7 @@ class TestExtractFromTranscript:
 class TestProcessMirror:
     def test_happy_path(self, client_live):
         with patch("main.get_requirements_by_engagement", return_value=SAMPLE_REQS):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/process-mirror")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/process-mirror")
         assert resp.status_code == 200
         data = resp.json()
         assert data["engagement_id"] == ENGAGEMENT
@@ -328,7 +332,7 @@ class TestProcessMirror:
     def test_all_untagged(self, client_live):
         untagged_reqs = [{**r, "tags": []} for r in SAMPLE_REQS]
         with patch("main.get_requirements_by_engagement", return_value=untagged_reqs):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/process-mirror")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/process-mirror")
         assert resp.status_code == 200
         data = resp.json()
         assert data["by_tag"] == {}
@@ -336,7 +340,7 @@ class TestProcessMirror:
 
     def test_empty_engagement(self, client_live):
         with patch("main.get_requirements_by_engagement", return_value=[]):
-            resp = client_live.get(f"/engagement/empty-eng/process-mirror")
+            resp = client_live.get(f"{API_PREFIX}/engagement/empty-eng/process-mirror")
         assert resp.status_code == 200
         data = resp.json()
         assert data["summary"]["total_requirements"] == 0
@@ -345,9 +349,11 @@ class TestProcessMirror:
 
     def test_db_error_returns_500(self, client_live):
         with patch("main.get_requirements_by_engagement", side_effect=Exception("connection refused")):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/process-mirror")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/process-mirror")
         assert resp.status_code == 500
-        assert "connection refused" in resp.json()["detail"]
+        data = resp.json()
+        assert "internal error" in data["detail"].lower()
+        assert "request_id" in data
 
     def test_req_with_multiple_tags_appears_in_each_group(self, client_live):
         multi_tag_req = [{
@@ -363,9 +369,83 @@ class TestProcessMirror:
             "created_at": "2026-01-01T00:00:00",
         }]
         with patch("main.get_requirements_by_engagement", return_value=multi_tag_req):
-            resp = client_live.get(f"/engagement/{ENGAGEMENT}/process-mirror")
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/process-mirror")
         data = resp.json()
         assert len(data["by_tag"]) == 3
         for tag in ["pain_point", "manual_step", "workaround"]:
             assert data["by_tag"][tag][0]["req_id"] == "REQ-001"
         assert data["untagged"] == []
+
+
+# ── POST /engagement/{id}/seed-synthetic (E2E / phases) ──────────────────────
+
+class TestSeedSynthetic:
+    def test_returns_404_if_engagement_not_found(self, client_live):
+        with patch("main.get_engagement", return_value=None):
+            resp = client_live.post(f"{API_PREFIX}/engagement/missing-eng/seed-synthetic")
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    def test_creates_synthetic_requirements(self, client_live):
+        def create_side_effect(engagement_id, title, description, **kwargs):
+            return {"req_id": "REQ-001", "engagement_id": engagement_id, "title": title, "description": description}
+        with (
+            patch("main.get_engagement", return_value={"engagement_id": ENGAGEMENT, "name": "Test"}),
+            patch("main.create_requirement", side_effect=create_side_effect),
+        ):
+            resp = client_live.post(f"{API_PREFIX}/engagement/{ENGAGEMENT}/seed-synthetic")
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["engagement_id"] == ENGAGEMENT
+        assert data["created"] >= 1
+        assert "requirements" in data
+        assert len(data["requirements"]) == data["created"]
+
+
+# ── POST /requirements/{req_id}/sign-off (human-in-the-loop) ──────────────────
+
+class TestSignOff:
+    def test_sme_approve_sets_sme_approved(self, client_live):
+        req = {**SAMPLE_REQS[0], "sign_off_status": "draft"}
+        updated = {**req, "sign_off_status": "sme_approved", "sign_off_by": "Jane", "sign_off_at": "2026-01-01T12:00:00Z"}
+        with (
+            patch("main.get_requirement_by_id", return_value=req),
+            patch("main.update_requirement", return_value=updated),
+        ):
+            resp = client_live.post(
+                f"{API_PREFIX}/requirements/REQ-001/sign-off?engagement_id={ENGAGEMENT}",
+                json={"level": "sme", "signed_by": "Jane"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["sign_off_status"] == "sme_approved"
+        assert resp.json()["sign_off_by"] == "Jane"
+
+    def test_owner_approve_after_sme_sets_confirmed(self, client_live):
+        req = {**SAMPLE_REQS[0], "sign_off_status": "sme_approved"}
+        updated = {**req, "sign_off_status": "confirmed", "sign_off_by": "Owner", "sign_off_at": "2026-01-01T12:00:00Z"}
+        with (
+            patch("main.get_requirement_by_id", return_value=req),
+            patch("main.update_requirement", return_value=updated),
+        ):
+            resp = client_live.post(
+                f"{API_PREFIX}/requirements/REQ-001/sign-off?engagement_id={ENGAGEMENT}",
+                json={"level": "owner", "signed_by": "Owner"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["sign_off_status"] == "confirmed"
+
+    def test_sign_off_404_if_req_not_found(self, client_live):
+        with patch("main.get_requirement_by_id", return_value=None):
+            resp = client_live.post(
+                f"{API_PREFIX}/requirements/REQ-999/sign-off?engagement_id={ENGAGEMENT}",
+                json={"level": "sme", "signed_by": "Jane"},
+            )
+        assert resp.status_code == 404
+
+    def test_sign_off_400_invalid_level(self, client_live):
+        with patch("main.get_requirement_by_id", return_value=SAMPLE_REQS[0]):
+            resp = client_live.post(
+                f"{API_PREFIX}/requirements/REQ-001/sign-off?engagement_id={ENGAGEMENT}",
+                json={"level": "invalid", "signed_by": "Jane"},
+            )
+        assert resp.status_code == 400
