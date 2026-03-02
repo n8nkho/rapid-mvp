@@ -674,7 +674,17 @@ def get_single_client(client_id: str):
 @router.post("/engagements", status_code=201)
 def post_engagement(body: EngagementCreate):
     try:
-        eng = create_engagement(body.dict(exclude_none=True))
+        data = body.dict(exclude_none=True)
+        status = data.get("status")
+        if status and status not in {"open", "completed", "abandoned"}:
+            raise HTTPException(status_code=400, detail="Invalid engagement status. Must be one of: open, completed, abandoned")
+        risk = data.get("risk_level")
+        if risk and risk not in {"low", "medium", "high"}:
+            raise HTTPException(status_code=400, detail="Invalid risk_level. Must be one of: low, medium, high")
+        health = data.get("health")
+        if health and health not in {"on_track", "at_risk", "off_track"}:
+            raise HTTPException(status_code=400, detail="Invalid health. Must be one of: on_track, at_risk, off_track")
+        eng = create_engagement(data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not eng:
@@ -765,12 +775,37 @@ def search_engagement(engagement_id: str, q: str = ""):
 
 # ── Requirements ──────────────────────────────────────────────────────────────
 
+_ALLOWED_PRIORITIES = {"Must-Have", "Should-Have", "Nice-to-Have"}
+_ALLOWED_CATEGORIES = {"Automation", "Control/Compliance", "Reporting", "Integration", "UX", "Data Migration"}
+_ALLOWED_FIT = {"Fit-to-Standard", "Soft-Gap", "Hard-Gap"}
+
+
 @router.post("/requirements", response_model=RequirementResponse, status_code=201)
 def post_requirement(body: RequirementCreate):
     kwargs = body.dict()
     engagement_id = kwargs.pop("engagement_id")
     title = kwargs.pop("title")
     description = kwargs.pop("description")
+
+    priority = kwargs.get("priority")
+    if priority and priority not in _ALLOWED_PRIORITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid priority. Must be one of: {sorted(_ALLOWED_PRIORITIES)}",
+        )
+    category = kwargs.get("category")
+    if category and category not in _ALLOWED_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid category. Must be one of: {sorted(_ALLOWED_CATEGORIES)}",
+        )
+    fit = kwargs.get("fit_assessment")
+    if fit and fit not in _ALLOWED_FIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid fit_assessment. Must be one of: {sorted(_ALLOWED_FIT)}",
+        )
+
     try:
         req = create_requirement(
             engagement_id=engagement_id,
@@ -2493,6 +2528,9 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
                 errors.append({"row": row_idx, "error": "Missing title or description"})
                 continue
             reference_id = _cell(row, col_ref_id)
+            if not reference_id:
+                errors.append({"row": row_idx, "error": "Missing Requirement ID (reference_id)"})
+                continue
             try:
                 created = create_requirement(
                     engagement_id=engagement_id,
