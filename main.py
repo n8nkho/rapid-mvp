@@ -622,21 +622,59 @@ def prefill_client_from_website(body: ClientPrefillFromWebsiteRequest):
             status_code=503,
             detail="Pre-fill is not available: ANTHROPIC_API_KEY is not configured. Enter client details manually.",
         )
-    url = (body.url or "").strip()
-    if not url:
+    raw = (body.url or "").strip()
+    if not raw:
         raise HTTPException(status_code=400, detail="url is required")
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    try:
-        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            html = resp.text
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=422, detail=f"Could not fetch URL: {e}")
-    except Exception as e:
-        logger.warning("prefill fetch failed: %s", e)
-        raise HTTPException(status_code=422, detail="Could not fetch URL")
+    # Heuristic: if input doesn't look like a full URL, treat it as a host or keyword
+    candidates: List[str] = []
+    base_inputs: List[str] = []
+    if "." not in raw and " " in raw:
+        # Keyword like "Carrier Global" -> carrier, carrierglobal
+        slug = "".join(raw.lower().split())
+        base_inputs = [slug]
+    elif "." not in raw:
+        base_inputs = [raw.lower()]
+    else:
+        base_inputs = [raw]
+
+    for base in base_inputs:
+        if base.startswith(("http://", "https://")):
+            candidates.append(base)
+        else:
+            candidates.append(f"https://{base}")
+            candidates.append(f"https://www.{base}")
+
+    # Try base and a few common paths to find a usable page
+    discovered: List[str] = []
+    html = None
+    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+        for base_url in candidates:
+            for path in ["", "/", "/en", "/en-us", "/about", "/about-us", "/company", "/en/worldwide/"]:
+                try:
+                    url = base_url.rstrip("/") + path
+                    resp = client.get(url)
+                    if resp.status_code < 400:
+                        if html is None:
+                            html = resp.text
+                            chosen_url = url
+                        if url not in discovered:
+                            discovered.append(url)
+                    # Stop early if we already found a good primary URL and a handful of alternates
+                    if html and len(discovered) >= 3:
+                        break
+                except httpx.HTTPError:
+                    continue
+            if html and len(discovered) >= 3:
+                break
+
+    if html is None:
+        # Could not fetch any usable page; surface discovered candidates (if any) to the UI
+        detail = "Could not fetch URL. Try choosing a specific About/Company page."
+        raise HTTPException(
+            status_code=422,
+            detail={"message": detail, "candidates": discovered} if discovered else detail,
+        )
+
     text = _html_to_plain_text(html)
     if len(text) < 100:
         raise HTTPException(status_code=422, detail="Page content too short to extract meaningful data")
