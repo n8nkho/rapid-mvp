@@ -1,17 +1,28 @@
-from fastapi import FastAPI, HTTPException, File, Form, UploadFile
+from fastapi import FastAPI, APIRouter, HTTPException, File, Form, UploadFile, Request, Header, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 import io
 import json
+import logging
 import os
 import re
+import uuid
+from uuid import UUID
 import psycopg2
+import httpx
 from datetime import datetime, timezone
 from openpyxl import Workbook, load_workbook
 
-# Import providers and database
+# Import config and validate env before any DB or providers
+from config import validate_config, get_cors_origins
+from auth import require_api_key
+
+validate_config()  # fail fast if required env missing
+
 from providers import get_provider, MODEL_HAIKU, MODEL_SONNET
 from database import (
     save_gap_analysis,
@@ -46,19 +57,96 @@ from database import (
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
+# Structured logging; config validated in lifespan
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("rapid")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Config already validated at import; use lifespan for future startup (e.g. connection pools)
+    yield
+
+
 app = FastAPI(
     title="RAPID Gap Analysis API",
     description="AI-powered SAP S/4HANA scope item gap analysis using semantic matching",
-    version="1.2.0"
+    version="1.2.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Global exception handlers (enterprise: stable JSON, no internal leak on 5xx) ──
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": exc.errors(),
+            "message": "Validation error",
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 500:
+        request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())[:8]
+        logger.exception(
+            "HTTP 5xx: request_id=%s path=%s detail=%s",
+            request_id,
+            request.url.path,
+            exc.detail,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": "An internal error occurred. Please try again or contact support.",
+                "request_id": request_id,
+            },
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = str(uuid.uuid4())[:8]
+    logger.exception(
+        "Unhandled exception: request_id=%s path=%s",
+        request_id,
+        request.url.path,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "An internal error occurred. Please try again or contact support.",
+            "request_id": request_id,
+        },
+    )
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request.state.request_id = str(uuid.uuid4())[:8]
+    response = await call_next(request)
+    return response
+
+
+# v1 API: all routes under /v1; optional API key when API_KEY env is set
+router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -114,6 +202,13 @@ class RequirementCreate(BaseModel):
     # Sprint 5 process flow fields
     process_level_2: Optional[str] = None          # e.g. Record to Report, Procure to Pay
     process_level_3: Optional[str] = None          # e.g. Accounts Payable, General Ledger
+    # Audit / RTM: external reference ID and source fields
+    reference_id: Optional[str] = None            # e.g. Excel/source requirement ID for audit trail
+    business_value: Optional[str] = None
+    current_system: Optional[str] = None
+    target_system_module: Optional[str] = None
+    fit_type: Optional[str] = None
+    related_test_case_id: Optional[str] = None
 
 class RequirementUpdate(BaseModel):
     status: Optional[str] = None
@@ -138,6 +233,12 @@ class RequirementUpdate(BaseModel):
     # Sprint 5 process flow fields
     process_level_2: Optional[str] = None
     process_level_3: Optional[str] = None
+    reference_id: Optional[str] = None
+    business_value: Optional[str] = None
+    current_system: Optional[str] = None
+    target_system_module: Optional[str] = None
+    fit_type: Optional[str] = None
+    related_test_case_id: Optional[str] = None
 
 class TranscriptExtractRequest(BaseModel):
     engagement_id: str
@@ -162,6 +263,18 @@ class ClientCreate(BaseModel):
     systems_to_replace: Optional[List[str]] = None
     countries: Optional[List[str]] = None
     regulatory_environment: Optional[List[str]] = None
+    # Strategy & context (pre-fill from website)
+    business_strategy: Optional[str] = None
+    goals: Optional[List[str]] = None
+    key_products: Optional[List[str]] = None
+    value_proposition: Optional[str] = None
+    senior_executives: Optional[List[Dict[str, str]]] = None  # [{"name": "...", "title": "..."}]
+    direct_competitors: Optional[List[str]] = None
+    substitutes: Optional[List[str]] = None
+
+class ClientPrefillFromWebsiteRequest(BaseModel):
+    url: str
+
 
 class EngagementCreate(BaseModel):
     client_id: str
@@ -169,6 +282,17 @@ class EngagementCreate(BaseModel):
     description: Optional[str] = None
     go_live_date: Optional[str] = None
     project_type: Optional[str] = None
+    # Control: status & dates
+    status: Optional[str] = "open"          # open | completed | abandoned
+    planned_start_date: Optional[str] = None
+    planned_end_date: Optional[str] = None
+    actual_start_date: Optional[str] = None
+    actual_end_date: Optional[str] = None
+    # Additional engagement control fields
+    project_manager: Optional[str] = None
+    sponsor: Optional[str] = None
+    risk_level: Optional[str] = None        # low | medium | high
+    health: Optional[str] = None            # on_track | at_risk | off_track
 
 class SignOffRequest(BaseModel):
     level: str      # "sme" or "owner"
@@ -209,6 +333,13 @@ class RequirementResponse(BaseModel):
     # Sprint 5 process flow fields
     process_level_2: Optional[str] = None
     process_level_3: Optional[str] = None
+    # Audit / RTM: external reference and source fields
+    reference_id: Optional[str] = None
+    business_value: Optional[str] = None
+    current_system: Optional[str] = None
+    target_system_module: Optional[str] = None
+    fit_type: Optional[str] = None
+    related_test_case_id: Optional[str] = None
 
 
 class ProcessFlowAssignRequest(BaseModel):
@@ -249,13 +380,18 @@ class ProcessStepUpdate(BaseModel):
     branches: Optional[List[Dict]] = None
 
 
-# Sprint 7: RICEFW = Reports, Interfaces, Conversions, Enhancements, Forms, Workflows
+# Sprint 7: RICEFW = Reports, Interfaces, Conversions, Enhancements, Forms, Workflows, Agents
+_RICEFW_COMPLEXITY = {"very_high", "high", "medium", "low"}
+_RICEFW_PRIORITY = {"must", "should", "could", "noneed"}
+
 class RICEFWCreate(BaseModel):
-    type: str       # R | I | C | E | F | W
+    type: str       # R | I | C | E | F | W | A
     name: str
-    description: Optional[str] = None
-    req_id: Optional[str] = None
+    description: str
+    req_id: str     # required: link to requirement
     status: Optional[str] = "identified"
+    complexity: Optional[str] = None   # very_high | high | medium | low
+    priority: Optional[str] = None     # must | should | could | noneed
 
 
 class RICEFWUpdate(BaseModel):
@@ -264,6 +400,8 @@ class RICEFWUpdate(BaseModel):
     description: Optional[str] = None
     req_id: Optional[str] = None
     status: Optional[str] = None
+    complexity: Optional[str] = None
+    priority: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -358,6 +496,7 @@ def _run_gap_analysis(
 
 @app.get("/health")
 def health():
+    """Liveness: app is running."""
     return {
         "status": "ok",
         "version": "1.2.0",
@@ -365,20 +504,31 @@ def health():
         "release": "S/4HANA Cloud Public Edition 2602"
     }
 
-@app.get("/catalogue")
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness: app and dependencies (e.g. DB) are reachable."""
+    try:
+        list_clients()
+        return {"status": "ok", "checks": {"database": "ok"}}
+    except Exception as e:
+        logger.warning("Readiness check failed: %s", e)
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+
+@router.get("/catalogue")
 def get_catalogue(lob: Optional[str] = None):
     items = SCOPE_ITEMS
     if lob:
         items = [i for i in items if i.get('lob', '').lower() == lob.lower()]
     return {"total": len(items), "items": items}
 
-@app.get("/lobs")
+@router.get("/lobs")
 def get_lobs():
     from collections import Counter
     counts = Counter(i['lob'] for i in SCOPE_ITEMS)
     return {"lobs": [{"name": k, "count": v} for k, v in sorted(counts.items())]}
 
-@app.get("/results")
+@router.get("/results")
 def get_results(engagement_id: str):
     try:
         results = get_results_by_engagement(engagement_id)
@@ -418,7 +568,7 @@ def _build_client_context_line(engagement_id: str) -> str:
 
 # ── Clients ───────────────────────────────────────────────────────────────────
 
-@app.post("/clients", status_code=201)
+@router.post("/clients", status_code=201)
 def post_client(body: ClientCreate):
     try:
         client = create_client(body.dict(exclude_none=True))
@@ -428,14 +578,87 @@ def post_client(body: ClientCreate):
         raise HTTPException(status_code=500, detail="Failed to create client")
     return client
 
-@app.get("/clients")
+@router.get("/clients")
 def list_all_clients():
     try:
         return {"clients": list_clients()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/clients/{client_id}")
+
+def _html_to_plain_text(html: str, max_chars: int = 35000) -> str:
+    """Strip HTML tags and collapse whitespace for LLM consumption."""
+    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars] if len(text) > max_chars else text
+
+
+_CLIENT_PREFILL_SYSTEM = """You are extracting structured company/client profile data from website content.
+Return a single JSON object with these keys only. Use null for unknown. For arrays use [] if none found.
+- name (string): company name
+- industry (string): industry sector
+- employees (number or null): employee count if mentioned
+- legal_entities (number or null): number of legal entities if mentioned
+- current_systems (array of strings): ERP or IT systems mentioned
+- countries (array of strings): countries of operation
+- regulatory_environment (array of strings): e.g. SOX, GDPR, HIPAA
+- business_strategy (string): brief description of business strategy
+- goals (array of strings): strategic or business goals
+- key_products (array of strings): main products or services
+- value_proposition (string): value proposition or differentiator
+- senior_executives (array of objects with "name" and "title")
+- direct_competitors (array of strings): direct competitors (Porter 5 forces)
+- substitutes (array of strings): substitute products/services (Porter 5 forces)
+Return only the JSON object, no markdown or explanation."""
+
+
+@router.post("/clients/prefill-from-website", response_model=Dict[str, Any])
+def prefill_client_from_website(body: ClientPrefillFromWebsiteRequest):
+    """Fetch URL, extract text, and use LLM to pre-populate client profile (Create Client form)."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="Pre-fill is not available: ANTHROPIC_API_KEY is not configured. Enter client details manually.",
+        )
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            html = resp.text
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=422, detail=f"Could not fetch URL: {e}")
+    except Exception as e:
+        logger.warning("prefill fetch failed: %s", e)
+        raise HTTPException(status_code=422, detail="Could not fetch URL")
+    text = _html_to_plain_text(html)
+    if len(text) < 100:
+        raise HTTPException(status_code=422, detail="Page content too short to extract meaningful data")
+    provider = get_provider()
+    user_prompt = f"Website content (excerpt):\n\n{text}\n\nExtract company profile JSON."
+    try:
+        result = provider.complete(_CLIENT_PREFILL_SYSTEM, user_prompt, max_tokens=1024, model=MODEL_HAIKU)
+        raw = result.get("content", "{}")
+        data = _extract_json_object(raw)
+    except Exception as e:
+        logger.exception("prefill LLM failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to extract company data from page")
+    # Normalize keys to match ClientCreate; drop unknown keys
+    allowed = {
+        "name", "industry", "employees", "legal_entities", "current_systems", "countries",
+        "regulatory_environment", "business_strategy", "goals", "key_products", "value_proposition",
+        "senior_executives", "direct_competitors", "substitutes",
+    }
+    return {k: v for k, v in data.items() if k in allowed}
+
+
+@router.get("/clients/{client_id}")
 def get_single_client(client_id: str):
     try:
         client = get_client(client_id)
@@ -448,7 +671,7 @@ def get_single_client(client_id: str):
 
 # ── Engagements ───────────────────────────────────────────────────────────────
 
-@app.post("/engagements", status_code=201)
+@router.post("/engagements", status_code=201)
 def post_engagement(body: EngagementCreate):
     try:
         eng = create_engagement(body.dict(exclude_none=True))
@@ -458,14 +681,14 @@ def post_engagement(body: EngagementCreate):
         raise HTTPException(status_code=500, detail="Failed to create engagement")
     return eng
 
-@app.get("/engagements")
+@router.get("/engagements")
 def list_all_engagements(client_id: Optional[str] = None):
     try:
         return {"engagements": list_engagements(client_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/engagements/{engagement_id}")
+@router.get("/engagements/{engagement_id}")
 def get_single_engagement(engagement_id: str):
     try:
         eng = get_engagement_with_client(engagement_id)
@@ -476,9 +699,73 @@ def get_single_engagement(engagement_id: str):
     return eng
 
 
+@router.get("/engagement/{engagement_id}/label")
+def get_engagement_label(engagement_id: str):
+    """Lightweight: engagement_id, project name, company name for display (e.g. header)."""
+    try:
+        eng = get_engagement_with_client(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"{engagement_id} not found")
+    client = eng.get("client") or {}
+    return {
+        "engagement_id": eng.get("engagement_id"),
+        "name": eng.get("name") or "",
+        "client_name": client.get("name") or "",
+    }
+
+
+@router.get("/engagement/{engagement_id}/search")
+def search_engagement(engagement_id: str, q: str = ""):
+    """Search within engagement by keywords and match code (req_id, type, etc). Returns requirements and RICEFW matches with navigation paths."""
+    q = (q or "").strip().lower()
+    if not q:
+        return {"engagement_id": engagement_id, "query": "", "requirements": [], "ricefw": []}
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+        ricefw_items = get_ricefw_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    req_matches = []
+    for r in requirements:
+        req_id = (r.get("req_id") or "").lower()
+        title = (r.get("title") or "").lower()
+        desc = (r.get("description") or "").lower()
+        tags = " ".join((r.get("tags") or [])).lower()
+        if q in req_id or q in title or q in desc or q in tags:
+            req_matches.append({
+                "type": "requirement",
+                "req_id": r.get("req_id"),
+                "title": r.get("title"),
+                "path": f"/workflow/{r.get('req_id')}?engagement_id={engagement_id}",
+            })
+    ricefw_matches = []
+    for item in ricefw_items:
+        name = (item.get("name") or "").lower()
+        desc = (item.get("description") or "").lower()
+        typ = (item.get("type") or "").lower()
+        req_id = (item.get("req_id") or "").lower()
+        if q in name or q in desc or q in typ or q in req_id:
+            ricefw_matches.append({
+                "kind": "ricefw",
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "req_id": item.get("req_id"),
+                "path": f"/engagement?engagement_id={engagement_id}#ricefw",
+            })
+    return {
+        "engagement_id": engagement_id,
+        "query": q,
+        "requirements": req_matches[:20],
+        "ricefw": ricefw_matches[:20],
+    }
+
+
 # ── Requirements ──────────────────────────────────────────────────────────────
 
-@app.post("/requirements", response_model=RequirementResponse, status_code=201)
+@router.post("/requirements", response_model=RequirementResponse, status_code=201)
 def post_requirement(body: RequirementCreate):
     kwargs = body.dict()
     engagement_id = kwargs.pop("engagement_id")
@@ -497,14 +784,14 @@ def post_requirement(body: RequirementCreate):
         raise HTTPException(status_code=500, detail="Failed to create requirement")
     return req
 
-@app.get("/requirements", response_model=List[RequirementResponse])
+@router.get("/requirements", response_model=List[RequirementResponse])
 def list_requirements(engagement_id: str):
     try:
         return get_requirements_by_engagement(engagement_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/requirements/extract-from-transcript", status_code=201)
+@router.post("/requirements/extract-from-transcript", status_code=201)
 def extract_from_transcript(body: TranscriptExtractRequest):
     provider = get_provider()
     client_context = _build_client_context_line(body.engagement_id)
@@ -736,7 +1023,7 @@ _DOMAIN_TEMPLATES: Dict[str, List[Dict]] = {
 _VALID_DOMAINS = list(_DOMAIN_TEMPLATES.keys())
 
 
-@app.get("/requirements/templates")
+@router.get("/requirements/templates")
 def get_requirement_templates(domain: str):
     key = domain.lower()
     if key not in _DOMAIN_TEMPLATES:
@@ -793,7 +1080,7 @@ def _extract_json_object(text: str) -> dict:
     raise ValueError("No complete JSON object found in response")
 
 
-@app.post("/requirements/archaeologist-session")
+@router.post("/requirements/archaeologist-session")
 def archaeologist_session(body: ArchaeologistSessionRequest):
     provider = get_provider()
 
@@ -858,7 +1145,7 @@ def archaeologist_session(body: ArchaeologistSessionRequest):
     return response
 
 
-@app.get("/requirements/{req_id}", response_model=RequirementResponse)
+@router.get("/requirements/{req_id}", response_model=RequirementResponse)
 def get_requirement(req_id: str, engagement_id: str):
     try:
         req = get_requirement_by_id(req_id, engagement_id)
@@ -868,7 +1155,7 @@ def get_requirement(req_id: str, engagement_id: str):
         raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
     return req
 
-@app.patch("/requirements/{req_id}", response_model=RequirementResponse)
+@router.patch("/requirements/{req_id}", response_model=RequirementResponse)
 def patch_requirement(req_id: str, engagement_id: str, body: RequirementUpdate):
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
@@ -882,7 +1169,7 @@ def patch_requirement(req_id: str, engagement_id: str, body: RequirementUpdate):
     return req
 
 
-@app.post("/requirements/{req_id}/sign-off", response_model=RequirementResponse)
+@router.post("/requirements/{req_id}/sign-off", response_model=RequirementResponse)
 def sign_off_requirement(req_id: str, engagement_id: str, body: SignOffRequest):
     """Sign-off state machine:
       level=sme   → sme_approved
@@ -922,7 +1209,7 @@ def sign_off_requirement(req_id: str, engagement_id: str, body: SignOffRequest):
     return updated
 
 
-@app.get("/requirements/{req_id}/traceability")
+@router.get("/requirements/{req_id}/traceability")
 def get_traceability(req_id: str, engagement_id: str):
     try:
         req = get_requirement_by_id(req_id, engagement_id)
@@ -975,7 +1262,7 @@ def get_traceability(req_id: str, engagement_id: str):
 
 # ── Gap Analysis ──────────────────────────────────────────────────────────────
 
-@app.post("/gap-analysis", response_model=GapAnalysisResponse)
+@router.post("/gap-analysis", response_model=GapAnalysisResponse)
 async def gap_analysis(request: GapAnalysisRequest):
     # Resolve process_description: from req_id lookup or direct input
     req_id = request.req_id
@@ -1081,7 +1368,7 @@ Return the top {request.top_n} most relevant scope items as JSON."""
 
 # ── Engagement Summary ────────────────────────────────────────────────────────
 
-@app.get("/engagement/{engagement_id}/summary")
+@router.get("/engagement/{engagement_id}/summary")
 def get_engagement_summary(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1134,7 +1421,7 @@ def get_engagement_summary(engagement_id: str):
 
 # ── Analyse All ───────────────────────────────────────────────────────────────
 
-@app.post("/engagement/{engagement_id}/analyse-all")
+@router.post("/engagement/{engagement_id}/analyse-all")
 def analyse_all(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1182,7 +1469,7 @@ def analyse_all(engagement_id: str):
 
 # ── Process Mirror ────────────────────────────────────────────────────────────
 
-@app.get("/engagement/{engagement_id}/process-mirror")
+@router.get("/engagement/{engagement_id}/process-mirror")
 def get_process_mirror(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1224,7 +1511,7 @@ def get_process_mirror(engagement_id: str):
 
 # ── Sign-off Status ────────────────────────────────────────────────────────────
 
-@app.get("/engagement/{engagement_id}/sign-off-status")
+@router.get("/engagement/{engagement_id}/sign-off-status")
 def get_sign_off_status(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1252,7 +1539,7 @@ def get_sign_off_status(engagement_id: str):
 
 # ── KPI Summary ────────────────────────────────────────────────────────────────
 
-@app.get("/engagement/{engagement_id}/kpi-summary")
+@router.get("/engagement/{engagement_id}/kpi-summary")
 def get_kpi_summary(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1305,7 +1592,7 @@ _CONTENT_TYPE_MAP = {
 }
 
 
-@app.post("/assets/upload", status_code=201)
+@router.post("/assets/upload", status_code=201)
 async def upload_asset(
     file: UploadFile = File(...),
     engagement_id: str = Form(...),
@@ -1382,7 +1669,7 @@ async def upload_asset(
     }
 
 
-@app.get("/assets")
+@router.get("/assets")
 def list_assets(engagement_id: str):
     try:
         assets = get_assets_by_engagement(engagement_id)
@@ -1391,7 +1678,7 @@ def list_assets(engagement_id: str):
     return {"engagement_id": engagement_id, "total": len(assets), "assets": assets}
 
 
-@app.get("/assets/requirement/{req_id}")
+@router.get("/assets/requirement/{req_id}")
 def list_assets_for_requirement(req_id: str, engagement_id: str):
     try:
         assets = get_assets_by_requirement(req_id, engagement_id)
@@ -1400,17 +1687,18 @@ def list_assets_for_requirement(req_id: str, engagement_id: str):
     return {"req_id": req_id, "engagement_id": engagement_id, "total": len(assets), "assets": assets}
 
 
-@app.patch("/assets/{asset_id}")
-def patch_asset(asset_id: str, body: AssetUpdate):
+@router.patch("/assets/{asset_id}")
+def patch_asset(asset_id: UUID, body: AssetUpdate):
+    aid = str(asset_id)
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided to update")
     try:
-        asset = update_asset(asset_id, updates)
+        asset = update_asset(aid, updates)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not asset:
-        raise HTTPException(status_code=404, detail=f"{asset_id} not found")
+        raise HTTPException(status_code=404, detail=f"{aid} not found")
     return asset
 
 
@@ -1563,12 +1851,12 @@ _PROCESS_HIERARCHY: Dict[str, Dict[str, Dict[str, List[str]]]] = {
 }
 
 
-@app.get("/process-hierarchy")
+@router.get("/process-hierarchy")
 def get_process_hierarchy():
     return _PROCESS_HIERARCHY
 
 
-@app.get("/process-hierarchy/flat")
+@router.get("/process-hierarchy/flat")
 def get_process_hierarchy_flat():
     flat = []
     for lob, level2_map in _PROCESS_HIERARCHY.items():
@@ -1645,7 +1933,7 @@ def _build_process_flow(requirements: list, engagement_id: str) -> dict:
     }
 
 
-@app.get("/engagement/{engagement_id}/process-flow")
+@router.get("/engagement/{engagement_id}/process-flow")
 def get_process_flow(engagement_id: str):
     try:
         requirements = get_requirements_by_engagement(engagement_id)
@@ -1654,7 +1942,7 @@ def get_process_flow(engagement_id: str):
     return _build_process_flow(requirements, engagement_id)
 
 
-@app.post("/engagement/{engagement_id}/process-flow/assign")
+@router.post("/engagement/{engagement_id}/process-flow/assign")
 def assign_process_flow(engagement_id: str, body: ProcessFlowAssignRequest):
     updates: Dict[str, Any] = {"process_level_2": body.process_level_2}
     if body.process_level_3 is not None:
@@ -1797,7 +2085,7 @@ def _sample_steps_for_requirement(req: dict) -> list:
     ]
 
 
-@app.get("/requirements/{req_id}/process-steps")
+@router.get("/requirements/{req_id}/process-steps")
 def list_process_steps(req_id: str, engagement_id: str):
     try:
         steps = get_process_steps(req_id, engagement_id)
@@ -1806,7 +2094,7 @@ def list_process_steps(req_id: str, engagement_id: str):
     return {"req_id": req_id, "engagement_id": engagement_id, "total": len(steps), "steps": steps}
 
 
-@app.post("/requirements/{req_id}/process-steps/seed", status_code=201)
+@router.post("/requirements/{req_id}/process-steps/seed", status_code=201)
 def seed_process_steps(req_id: str, engagement_id: str):
     """Create 5 sample process steps for a requirement that has no steps yet."""
     try:
@@ -1836,7 +2124,7 @@ def seed_process_steps(req_id: str, engagement_id: str):
     return {"req_id": req_id, "seeded": len(created), "steps": created}
 
 
-@app.post("/requirements/{req_id}/process-steps/extract", status_code=201)
+@router.post("/requirements/{req_id}/process-steps/extract", status_code=201)
 def extract_process_steps(req_id: str, engagement_id: str):
     """AI-extract As-Is process steps from the requirement's transcript. Clears existing steps first."""
     try:
@@ -1921,7 +2209,7 @@ def extract_process_steps(req_id: str, engagement_id: str):
     return {"req_id": req_id, "engagement_id": engagement_id, "extracted": len(created), "steps": created}
 
 
-@app.post("/requirements/{req_id}/process-steps", status_code=201)
+@router.post("/requirements/{req_id}/process-steps", status_code=201)
 def create_step(req_id: str, engagement_id: str, body: ProcessStepCreate):
     if body.shape not in _VALID_SHAPES:
         raise HTTPException(status_code=400, detail=f"Invalid shape '{body.shape}'. Must be one of: {sorted(_VALID_SHAPES)}")
@@ -1939,8 +2227,9 @@ def create_step(req_id: str, engagement_id: str, body: ProcessStepCreate):
     return step
 
 
-@app.put("/requirements/{req_id}/process-steps/{step_id}")
-def update_step(req_id: str, step_id: str, engagement_id: str, body: ProcessStepUpdate):
+@router.put("/requirements/{req_id}/process-steps/{step_id}")
+def update_step(req_id: str, step_id: UUID, engagement_id: str, body: ProcessStepUpdate):
+    step_id_str = str(step_id)
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided to update")
@@ -1949,26 +2238,26 @@ def update_step(req_id: str, step_id: str, engagement_id: str, body: ProcessStep
     if "step_type" in updates and updates["step_type"] not in _VALID_STEP_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid step_type. Must be one of: {sorted(_VALID_STEP_TYPES)}")
     try:
-        step = update_process_step(step_id, req_id, engagement_id, updates)
+        step = update_process_step(step_id_str, req_id, engagement_id, updates)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not step:
-        raise HTTPException(status_code=404, detail=f"Step {step_id} not found")
+        raise HTTPException(status_code=404, detail=f"Step {step_id_str} not found")
     return step
 
 
-@app.delete("/requirements/{req_id}/process-steps/{step_id}", status_code=204)
-def delete_step(req_id: str, step_id: str, engagement_id: str):
+@router.delete("/requirements/{req_id}/process-steps/{step_id}", status_code=204)
+def delete_step(req_id: str, step_id: UUID, engagement_id: str):
     try:
-        deleted = delete_process_step(step_id, req_id, engagement_id)
+        deleted = delete_process_step(str(step_id), req_id, engagement_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Step {step_id} not found")
+        raise HTTPException(status_code=404, detail=f"Step {step_id_str} not found")
     return None
 
 
-@app.post("/engagement/{engagement_id}/seed-process-steps", status_code=201)
+@router.post("/engagement/{engagement_id}/seed-process-steps", status_code=201)
 def seed_all_process_steps(engagement_id: str):
     """Seed sample process steps for every requirement in the engagement that has none."""
     try:
@@ -2021,7 +2310,7 @@ def _parse_excel_tags(raw: Optional[str]) -> List[str]:
     return result
 
 
-@app.get("/engagement/{engagement_id}/requirements/export")
+@router.get("/engagement/{engagement_id}/requirements/export")
 def export_requirements_excel(engagement_id: str):
     """Download all requirements for an engagement as an Excel file."""
     try:
@@ -2035,6 +2324,7 @@ def export_requirements_excel(engagement_id: str):
 
     headers = [
         "req_id",
+        "reference_id",
         "engagement_id",
         "title",
         "description",
@@ -2044,6 +2334,11 @@ def export_requirements_excel(engagement_id: str):
         "tags",
         "stakeholder",
         "sign_off_status",
+        "business_value",
+        "current_system",
+        "target_system_module",
+        "fit_type",
+        "related_test_case_id",
     ]
     ws.append(headers)
 
@@ -2052,6 +2347,7 @@ def export_requirements_excel(engagement_id: str):
         tags_str = ", ".join(tags)
         ws.append([
             r.get("req_id"),
+            r.get("reference_id"),
             r.get("engagement_id"),
             r.get("title"),
             r.get("description"),
@@ -2061,6 +2357,11 @@ def export_requirements_excel(engagement_id: str):
             tags_str,
             r.get("stakeholder"),
             r.get("sign_off_status"),
+            r.get("business_value"),
+            r.get("current_system"),
+            r.get("target_system_module"),
+            r.get("fit_type"),
+            r.get("related_test_case_id"),
         ])
 
     stream = io.BytesIO()
@@ -2075,14 +2376,57 @@ def export_requirements_excel(engagement_id: str):
     )
 
 
-@app.post("/engagement/{engagement_id}/requirements/import")
+def _normalize_header_cell(c: Any) -> str:
+    if c is None:
+        return ""
+    return str(c).strip().lower()
+
+
+def _rtm_find_header_row(rows: List[tuple]) -> Optional[int]:
+    """Return row index of RTM header (row with 'Requirement ID', 'Requirement Title', 'Requirement Description')."""
+    for idx, row in enumerate(rows[:5]):
+        header = [_normalize_header_cell(c) for c in row]
+        if any("requirement id" in h for h in header) and any("requirement title" in h for h in header) and any("requirement description" in h for h in header):
+            return idx
+    return None
+
+
+def _priority_rtm_to_rapid(p: Optional[str]) -> Optional[str]:
+    if not p:
+        return None
+    p = p.strip().lower()
+    if p in ("high", "must", "must-have"):
+        return "Must-Have"
+    if p in ("medium", "should", "should-have"):
+        return "Should-Have"
+    if p in ("low", "could", "nice", "nice-to-have"):
+        return "Nice-to-Have"
+    return p.title() if p else None
+
+
+def _status_rtm_to_rapid(s: Optional[str]) -> str:
+    if not s:
+        return "open"
+    s = s.strip().lower()
+    if s in ("planned", "draft", "new"):
+        return "open"
+    if s in ("in progress", "in_progress", "inprogress"):
+        return "in_progress"
+    if s in ("analysed", "analyzed", "done", "complete"):
+        return "analysed"
+    if s in ("closed", "cancelled"):
+        return "closed"
+    return "open"
+
+
+@router.post("/engagement/{engagement_id}/requirements/import")
 async def import_requirements_excel(engagement_id: str, file: UploadFile = File(...)):
     """Upload an Excel file to create or update requirements for an engagement.
 
-    Behaviour:
-    - If req_id matches an existing requirement → update selected fields.
-    - If req_id is blank → create a new requirement.
-    - Tags are normalised and filtered to the allowed set.
+    Supports two formats:
+    - RTM format: Header row contains 'Requirement ID', 'Requirement Title', 'Requirement Description'
+      (e.g. RAPID_RTM_Acme_S4.xlsx). Uses internal REQ-XXX ids; stores Excel Requirement ID in reference_id.
+    - Legacy format: Header row contains 'req_id', 'title', 'description'. Existing req_id updates; blank creates new.
     """
     filename = file.filename or ""
     if not filename.lower().endswith(".xlsx"):
@@ -2094,12 +2438,97 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
 
-    ws = wb.active
+    ws = wb["RTM"] if "RTM" in wb.sheetnames else wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         raise HTTPException(status_code=400, detail="Excel file is empty")
 
-    header = [str(c).strip().lower() if c is not None else "" for c in rows[0]]
+    def _cell(row_values, idx: Optional[int]) -> Optional[str]:
+        if idx is None or idx >= len(row_values):
+            return None
+        value = row_values[idx]
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    # Detect RTM format: find row with Requirement ID, Requirement Title, Requirement Description
+    rtm_header_row = _rtm_find_header_row(rows)
+    if rtm_header_row is not None:
+        header = [_normalize_header_cell(c) for c in rows[rtm_header_row]]
+        data_start = rtm_header_row + 1
+
+        def _rtm_col(name_substr: str) -> Optional[int]:
+            for i, h in enumerate(header):
+                if name_substr in h:
+                    return i
+            return None
+
+        # Requirement ID = Excel/source ID (stored as reference_id); must not be "requirement title"
+        col_ref_id = next((i for i, h in enumerate(header) if h == "requirement id" or (h and "requirement id" in h and "title" not in h)), _rtm_col("requirement id"))
+        col_title = _rtm_col("requirement title")
+        col_desc = _rtm_col("requirement description")
+        col_bp = _rtm_col("business process")
+        col_sub = _rtm_col("sub-process")
+        col_type = _rtm_col("requirement type")
+        col_priority = _rtm_col("priority")
+        col_biz_val = _rtm_col("business value")
+        col_source = _rtm_col("source")
+        col_cur_sys = _rtm_col("current system")
+        col_tgt_sys = _rtm_col("target system")
+        col_fit = _rtm_col("fit type")
+        col_tc = _rtm_col("test case")
+        col_status = _rtm_col("status")
+
+        if col_title is None or col_desc is None:
+            raise HTTPException(status_code=400, detail="RTM sheet must contain Requirement Title and Requirement Description columns")
+
+        created_ids: List[str] = []
+        errors: List[Dict[str, Any]] = []
+        for row_idx, row in enumerate(rows[data_start:], start=data_start + 1):
+            if not any(row):
+                continue
+            title = _cell(row, col_title)
+            description = _cell(row, col_desc)
+            if not title or not description:
+                errors.append({"row": row_idx, "error": "Missing title or description"})
+                continue
+            reference_id = _cell(row, col_ref_id)
+            try:
+                created = create_requirement(
+                    engagement_id=engagement_id,
+                    title=title,
+                    description=description,
+                    source_type="Excel",
+                    reference_id=reference_id,
+                    business_process=_cell(row, col_bp),
+                    process_level_2=_cell(row, col_sub),
+                    category=_cell(row, col_type),
+                    priority=_priority_rtm_to_rapid(_cell(row, col_priority)),
+                    stakeholder=_cell(row, col_source),
+                    status=_status_rtm_to_rapid(_cell(row, col_status)),
+                    business_value=_cell(row, col_biz_val),
+                    current_system=_cell(row, col_cur_sys),
+                    target_system_module=_cell(row, col_tgt_sys),
+                    fit_type=_cell(row, col_fit),
+                    related_test_case_id=_cell(row, col_tc),
+                )
+                if created:
+                    created_ids.append(created.get("req_id"))
+            except Exception as e:
+                errors.append({"row": row_idx, "error": str(e)})
+
+        return {
+            "engagement_id": engagement_id,
+            "format": "RTM",
+            "created": len(created_ids),
+            "updated": 0,
+            "created_req_ids": created_ids,
+            "updated_req_ids": [],
+            "errors": errors,
+        }
+
+    # Legacy format: header in first row
+    header = [_normalize_header_cell(c) for c in rows[0]]
 
     def _col(name: str) -> Optional[int]:
         try:
@@ -2127,38 +2556,22 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
 
     existing_by_req = {r.get("req_id"): r for r in existing if r.get("req_id")}
 
-    def _cell(row_values, idx: Optional[int]) -> Optional[str]:
-        if idx is None or idx >= len(row_values):
-            return None
-        value = row_values[idx]
-        if value is None:
-            return None
-        return str(value).strip()
-
-    created_ids: List[str] = []
-    updated_ids: List[str] = []
-    errors: List[Dict[str, Any]] = []
+    created_ids = []
+    updated_ids = []
+    errors = []
 
     for row_idx, row in enumerate(rows[1:], start=2):
-        # Skip completely empty rows
         if not any(row):
             continue
-
         title = _cell(row, col_title)
         description = _cell(row, col_desc)
         if not title or not description:
             errors.append({"row": row_idx, "error": "Missing title or description"})
             continue
-
         req_id = _cell(row, col_req_id)
         tags_raw = _cell(row, col_tags)
         tags = _parse_excel_tags(tags_raw)
-
-        payload: Dict[str, Any] = {
-            "title": title,
-            "description": description,
-        }
-
+        payload = {"title": title, "description": description}
         bp = _cell(row, col_bp)
         if bp:
             payload["business_process"] = bp
@@ -2174,24 +2587,17 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
         sign_off_status = _cell(row, col_sign_off_status)
         if sign_off_status:
             payload["sign_off_status"] = sign_off_status
-
         try:
             if req_id and req_id in existing_by_req:
-                # Update existing requirement
                 updates = {k: v for k, v in payload.items() if k not in {"title", "description"}}
                 updates["title"] = title
                 updates["description"] = description
                 if tags:
                     updates["tags"] = tags
-                updated = update_requirement(
-                    req_id=req_id,
-                    engagement_id=engagement_id,
-                    updates=updates,
-                )
+                updated = update_requirement(req_id=req_id, engagement_id=engagement_id, updates=updates)
                 if updated:
                     updated_ids.append(updated.get("req_id", req_id))
             else:
-                # Create new requirement
                 created = create_requirement(
                     engagement_id=engagement_id,
                     title=title,
@@ -2221,11 +2627,11 @@ async def import_requirements_excel(engagement_id: str, file: UploadFile = File(
 
 # ── RICEFW Customisation Inventory (Sprint 7) ──────────────────────────────────
 
-_RICEFW_TYPES = {"R", "I", "C", "E", "F", "W"}
+_RICEFW_TYPES = {"R", "I", "C", "E", "F", "W", "A"}
 _RICEFW_STATUSES = {"identified", "approved", "in_development", "delivered", "cancelled"}
 
 
-@app.get("/engagement/{engagement_id}/ricefw")
+@router.get("/engagement/{engagement_id}/ricefw")
 def list_ricefw(engagement_id: str, type: Optional[str] = None):
     """List RICEFW customisation items for an engagement. type filter: R | I | C | E | F | W."""
     if type and type.upper() not in _RICEFW_TYPES:
@@ -2237,7 +2643,7 @@ def list_ricefw(engagement_id: str, type: Optional[str] = None):
     return {"engagement_id": engagement_id, "total": len(items), "items": items}
 
 
-@app.get("/engagement/{engagement_id}/ricefw/export")
+@router.get("/engagement/{engagement_id}/ricefw/export")
 def export_ricefw_excel(engagement_id: str, type: Optional[str] = None):
     """Download RICEFW inventory for an engagement as an Excel file. Optional type filter: R|I|C|E|F|W."""
     if type and type.upper() not in _RICEFW_TYPES:
@@ -2250,7 +2656,7 @@ def export_ricefw_excel(engagement_id: str, type: Optional[str] = None):
     wb = Workbook()
     ws = wb.active
     ws.title = "RICEFW Inventory"
-    headers = ["id", "engagement_id", "type", "name", "description", "req_id", "status", "created_at"]
+    headers = ["id", "engagement_id", "type", "name", "description", "req_id", "status", "complexity", "priority", "created_at"]
     ws.append(headers)
     for item in items:
         ws.append([
@@ -2261,6 +2667,8 @@ def export_ricefw_excel(engagement_id: str, type: Optional[str] = None):
             item.get("description") or "",
             item.get("req_id") or "",
             item.get("status") or "",
+            item.get("complexity") or "",
+            item.get("priority") or "",
             item.get("created_at") or "",
         ])
 
@@ -2276,20 +2684,37 @@ def export_ricefw_excel(engagement_id: str, type: Optional[str] = None):
     )
 
 
-@app.post("/engagement/{engagement_id}/ricefw", status_code=201)
+def _check_ricefw_complexity_priority(complexity: Optional[str], priority: Optional[str]) -> None:
+    if complexity and complexity.lower() not in _RICEFW_COMPLEXITY:
+        raise HTTPException(status_code=400, detail=f"complexity must be one of: {', '.join(sorted(_RICEFW_COMPLEXITY))}")
+    if priority and priority.lower() not in _RICEFW_PRIORITY:
+        raise HTTPException(status_code=400, detail=f"priority must be one of: {', '.join(sorted(_RICEFW_PRIORITY))}")
+
+
+@router.post("/engagement/{engagement_id}/ricefw", status_code=201)
 def create_ricefw(engagement_id: str, body: RICEFWCreate):
     if body.type.upper() not in _RICEFW_TYPES:
         raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
     if body.status and body.status.lower() not in _RICEFW_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(_RICEFW_STATUSES))}")
+    _check_ricefw_complexity_priority(body.complexity, body.priority)
+    # Ensure req_id belongs to this engagement (no cross-engagement data linkage)
+    req = get_requirement_by_id(body.req_id, engagement_id)
+    if not req:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Requirement {body.req_id} not found in this engagement. All RICEFW items must link to requirements within the same engagement.",
+        )
     try:
         item = create_ricefw_item(
             engagement_id=engagement_id,
             item_type=body.type.upper(),
             name=body.name,
-            description=body.description,
             req_id=body.req_id,
+            description=body.description,
             status=(body.status or "identified").lower(),
+            complexity=body.complexity.lower() if body.complexity else None,
+            priority=body.priority.lower() if body.priority else None,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2298,8 +2723,8 @@ def create_ricefw(engagement_id: str, body: RICEFWCreate):
     return item
 
 
-@app.patch("/engagement/{engagement_id}/ricefw/{item_id}")
-def update_ricefw(engagement_id: str, item_id: str, body: RICEFWUpdate):
+@router.patch("/engagement/{engagement_id}/ricefw/{item_id}")
+def update_ricefw(engagement_id: str, item_id: UUID, body: RICEFWUpdate):
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided to update")
@@ -2311,8 +2736,20 @@ def update_ricefw(engagement_id: str, item_id: str, body: RICEFWUpdate):
         updates["type"] = updates["type"].upper()
     if "status" in updates:
         updates["status"] = updates["status"].lower()
+    _check_ricefw_complexity_priority(updates.get("complexity"), updates.get("priority"))
+    if "complexity" in updates and updates["complexity"]:
+        updates["complexity"] = updates["complexity"].lower()
+    if "priority" in updates and updates["priority"]:
+        updates["priority"] = updates["priority"].lower()
+    if "req_id" in updates:
+        req = get_requirement_by_id(updates["req_id"], engagement_id)
+        if not req:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Requirement {updates['req_id']} not found in this engagement. All RICEFW items must link to requirements within the same engagement.",
+            )
     try:
-        item = update_ricefw_item(item_id, engagement_id, updates)
+        item = update_ricefw_item(str(item_id), engagement_id, updates)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not item:
@@ -2320,10 +2757,10 @@ def update_ricefw(engagement_id: str, item_id: str, body: RICEFWUpdate):
     return item
 
 
-@app.delete("/engagement/{engagement_id}/ricefw/{item_id}", status_code=204)
-def delete_ricefw(engagement_id: str, item_id: str):
+@router.delete("/engagement/{engagement_id}/ricefw/{item_id}", status_code=204)
+def delete_ricefw(engagement_id: str, item_id: UUID):
     try:
-        deleted = delete_ricefw_item(item_id, engagement_id)
+        deleted = delete_ricefw_item(str(item_id), engagement_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not deleted:
@@ -2366,11 +2803,62 @@ CREATE TABLE IF NOT EXISTS ricefw_inventory (
   name            text NOT NULL,
   description     text,
   status          text DEFAULT 'identified',
+  complexity      text,
+  priority        text,
   created_at      timestamptz DEFAULT now(),
   updated_at      timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ricefw_engagement ON ricefw_inventory (engagement_id);
 CREATE INDEX IF NOT EXISTS idx_ricefw_type ON ricefw_inventory (engagement_id, type);
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS complexity text;
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS priority text;
+"""
+
+_CLIENTS_EXTRA_DDL = """
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_strategy text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS goals jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS key_products jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS value_proposition text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS senior_executives jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS direct_competitors jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS substitutes jsonb;
+"""
+
+_ENGAGEMENTS_EXTRA_DDL = """
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS status text DEFAULT 'open';
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS planned_start_date text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS planned_end_date text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS actual_start_date text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS actual_end_date text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS project_manager text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS sponsor text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS risk_level text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS health text;
+"""
+
+_REQUIREMENTS_EXTRA_DDL = """
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS reference_id text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS business_value text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS current_system text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS target_system_module text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS fit_type text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS related_test_case_id text;
+"""
+
+# Reference table: user, role, engagement_id — for verifying access and future restriction
+_USER_ENGAGEMENT_ACCESS_DDL = """
+CREATE TABLE IF NOT EXISTS user_engagement_access (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         text NOT NULL,
+  role            text NOT NULL DEFAULT 'member',
+  engagement_id   text NOT NULL,
+  created_at      timestamptz DEFAULT now(),
+  updated_at      timestamptz DEFAULT now(),
+  UNIQUE(user_id, engagement_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_engagement_access_user ON user_engagement_access (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_engagement_access_engagement ON user_engagement_access (engagement_id);
+COMMENT ON TABLE user_engagement_access IS 'Reference: verify user and role per engagement for access control';
 """
 
 
@@ -2389,11 +2877,19 @@ def _get_pg_dsn() -> str:
     )
 
 
-@app.post("/admin/migrate", status_code=200)
+def _require_admin_key(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """If ADMIN_API_KEY is set, require X-Admin-Key header to match."""
+    key = os.getenv("ADMIN_API_KEY")
+    if key and x_admin_key != key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])
 def run_migrations():
     """Create required tables if they don't exist.
     Set DATABASE_URL env var to a direct PostgreSQL connection string (e.g., from Supabase dashboard).
     If not set, returns the SQL to run manually in Supabase SQL Editor.
+    When ADMIN_API_KEY is set, call with header: X-Admin-Key: <value>.
     """
     dsn = _get_pg_dsn()
     if dsn:
@@ -2403,18 +2899,25 @@ def run_migrations():
             cur = conn.cursor()
             cur.execute(_PROCESS_STEPS_DDL)
             cur.execute(_RICEFW_DDL)
+            cur.execute(_CLIENTS_EXTRA_DDL)
+            cur.execute(_ENGAGEMENTS_EXTRA_DDL)
+            cur.execute(_REQUIREMENTS_EXTRA_DDL)
+            cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps and ricefw_inventory tables ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients columns, engagements columns, requirements columns, and user_engagement_access ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
     }
+
+
+app.include_router(router)
