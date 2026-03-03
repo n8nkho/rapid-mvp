@@ -2551,7 +2551,8 @@ def update_step(req_id: str, step_id: UUID, engagement_id: str, body: ProcessSte
 @router.delete("/requirements/{req_id}/process-steps/{step_id}", status_code=204)
 def delete_step(req_id: str, step_id: UUID, engagement_id: str):
     try:
-        deleted = delete_process_step(str(step_id), req_id, engagement_id)
+        step_id_str = str(step_id)
+        deleted = delete_process_step(step_id_str, req_id, engagement_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     if not deleted:
