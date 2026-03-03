@@ -48,7 +48,7 @@ def get_results_by_engagement(engagement_id: str, limit: int = 200) -> list:
     return response.data or []
 
 
-# ── Requirements ─────────────────────────────────────────────────────────────
+# ── Requirements & HITL ─────────────────────────────────────────────────────
 
 def _next_req_id(engagement_id: str) -> str:
     """Generate next sequential REQ-XXX id, unique within an engagement."""
@@ -158,6 +158,49 @@ def update_requirement(req_id: str, engagement_id: str, updates: dict) -> dict:
         .execute()
     )
     return response.data[0] if response.data else {}
+
+
+def _next_hitl_event_id(engagement_id: str) -> str:
+    """Generate next sequential HEV-XXX id, scoped per engagement."""
+    response = (
+        supabase.table("hitl_events")
+        .select("event_id")
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        event_id = row.get("event_id") or ""
+        if isinstance(event_id, str) and event_id.startswith("HEV-"):
+            try:
+                nums.append(int(event_id.split("-")[1]))
+            except (IndexError, ValueError):
+                pass
+    return f"HEV-{max(nums, default=0) + 1:03d}"
+
+
+def create_hitl_event(data: dict) -> dict:
+    """Insert a HITL event; generates event_id if missing."""
+    engagement_id = data.get("engagement_id")
+    if not engagement_id:
+        raise ValueError("engagement_id is required for HITL events")
+    if not data.get("event_id"):
+        data = {**data, "event_id": _next_hitl_event_id(engagement_id)}
+    response = supabase.table("hitl_events").insert(data).execute()
+    return response.data[0] if response.data else {}
+
+
+def list_hitl_events(engagement_id: str) -> list:
+    """Return HITL events for an engagement, newest first."""
+    response = (
+        supabase.table("hitl_events")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return response.data or []
 
 
 # ── Clients ───────────────────────────────────────────────────────────────────
@@ -452,8 +495,17 @@ def get_process_steps_by_engagement(engagement_id: str) -> list:
 import uuid as _uuid_module
 
 
-def create_ricefw_item(engagement_id: str, item_type: str, name: str, description: str = None, req_id: str = None, status: str = "identified") -> dict:
-    """item_type: R | I | C | E | F | W (Reports, Interfaces, Conversions, Enhancements, Forms, Workflows)."""
+def create_ricefw_item(
+    engagement_id: str,
+    item_type: str,
+    name: str,
+    req_id: str,
+    description: str,
+    status: str = "identified",
+    complexity: str = None,
+    priority: str = None,
+) -> dict:
+    """item_type: R | I | C | E | F | W | A. req_id and description are required."""
     now = datetime.now(timezone.utc).isoformat()
     record = {
         "id": str(_uuid_module.uuid4()),
@@ -461,12 +513,15 @@ def create_ricefw_item(engagement_id: str, item_type: str, name: str, descriptio
         "type": item_type,
         "name": name,
         "description": description or "",
+        "req_id": req_id,
         "status": status,
         "created_at": now,
         "updated_at": now,
     }
-    if req_id is not None:
-        record["req_id"] = req_id
+    if complexity is not None:
+        record["complexity"] = complexity
+    if priority is not None:
+        record["priority"] = priority
     response = supabase.table("ricefw_inventory").insert(record).execute()
     return response.data[0] if response.data else {}
 

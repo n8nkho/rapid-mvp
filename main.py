@@ -54,6 +54,8 @@ from database import (
     get_ricefw_by_engagement,
     update_ricefw_item,
     delete_ricefw_item,
+    create_hitl_event,
+    list_hitl_events,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -209,6 +211,11 @@ class RequirementCreate(BaseModel):
     target_system_module: Optional[str] = None
     fit_type: Optional[str] = None
     related_test_case_id: Optional[str] = None
+    # HITL pipeline
+    hitl_state: Optional[str] = "ai_draft"
+    hitl_history: Optional[List[Dict]] = None
+    ai_rationale: Optional[str] = None
+    reviewer_notes: Optional[str] = None
 
 class RequirementUpdate(BaseModel):
     status: Optional[str] = None
@@ -239,6 +246,11 @@ class RequirementUpdate(BaseModel):
     target_system_module: Optional[str] = None
     fit_type: Optional[str] = None
     related_test_case_id: Optional[str] = None
+    # HITL pipeline
+    hitl_state: Optional[str] = None
+    hitl_history: Optional[List[Dict]] = None
+    ai_rationale: Optional[str] = None
+    reviewer_notes: Optional[str] = None
 
 class TranscriptExtractRequest(BaseModel):
     engagement_id: str
@@ -298,6 +310,21 @@ class SignOffRequest(BaseModel):
     level: str      # "sme" or "owner"
     signed_by: str
 
+
+class HitlAdvanceRequest(BaseModel):
+    engagement_id: str
+    actor: str
+    actor_role: Optional[str] = None
+    notes: Optional[str] = None
+    correction: Optional[Dict[str, Any]] = None
+
+
+class HitlRejectRequest(BaseModel):
+    engagement_id: str
+    actor: str
+    reason: str
+    target_state: Optional[str] = None  # "ai_draft" or "out_of_scope"
+
 class AssetUpdate(BaseModel):
     req_id: Optional[str] = None
     process_level_2: Optional[str] = None
@@ -340,6 +367,11 @@ class RequirementResponse(BaseModel):
     target_system_module: Optional[str] = None
     fit_type: Optional[str] = None
     related_test_case_id: Optional[str] = None
+    # HITL pipeline
+    hitl_state: Optional[str] = None
+    hitl_history: Optional[Any] = None
+    ai_rationale: Optional[str] = None
+    reviewer_notes: Optional[str] = None
 
 
 class ProcessFlowAssignRequest(BaseModel):
@@ -816,6 +848,8 @@ def search_engagement(engagement_id: str, q: str = ""):
 _ALLOWED_PRIORITIES = {"Must-Have", "Should-Have", "Nice-to-Have"}
 _ALLOWED_CATEGORIES = {"Automation", "Control/Compliance", "Reporting", "Integration", "UX", "Data Migration"}
 _ALLOWED_FIT = {"Fit-to-Standard", "Soft-Gap", "Hard-Gap"}
+_HITL_STATES_ORDERED = ["ai_draft", "needs_sme_review", "needs_architect_review", "approved"]
+_HITL_TERMINAL_STATES = {"approved", "out_of_scope"}
 
 
 @router.post("/requirements", response_model=RequirementResponse, status_code=201)
@@ -938,6 +972,8 @@ Rules:
                 shadow_tools=item.get("shadow_tools") or None,
                 actors=item.get("actors") or None,
                 kpi_impact=item.get("kpi_impact") or None,
+                hitl_state="ai_draft",
+                ai_rationale="Extracted from transcript by AI",
             )
             if req:
                 created.append({
@@ -1209,6 +1245,8 @@ def archaeologist_session(body: ArchaeologistSessionRequest):
                 business_process=body.business_process,
                 actors=extracted.get("actors") or None,
                 shadow_tools=extracted.get("shadow_tools") or None,
+                hitl_state="ai_draft",
+                ai_rationale="Drafted by archaeologist agent",
             )
             if req:
                 response["req_id"] = req.get("req_id")
@@ -1272,6 +1310,137 @@ def sign_off_requirement(req_id: str, engagement_id: str, body: SignOffRequest):
         "sign_off_status": new_status,
         "sign_off_by": body.signed_by,
         "sign_off_at": now,
+    }
+    try:
+        updated = update_requirement(req_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+    return updated
+
+
+@router.post("/requirements/{req_id}/hitl-advance", response_model=RequirementResponse)
+def hitl_advance(req_id: str, engagement_id: str, body: HitlAdvanceRequest):
+    """Advance requirement HITL state along the pipeline and record an event."""
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    current = (req.get("hitl_state") or "ai_draft").lower()
+    if current in _HITL_TERMINAL_STATES:
+        raise HTTPException(status_code=400, detail=f"HITL state '{current}' is terminal and cannot be advanced")
+
+    try:
+        idx = _HITL_STATES_ORDERED.index(current) if current in _HITL_STATES_ORDERED else 0
+    except ValueError:
+        idx = 0
+    if idx >= len(_HITL_STATES_ORDERED) - 1:
+        new_state = _HITL_STATES_ORDERED[-1]
+    else:
+        new_state = _HITL_STATES_ORDERED[idx + 1]
+
+    # Record HITL event
+    try:
+        create_hitl_event(
+            {
+                "req_id": req_id,
+                "engagement_id": engagement_id,
+                "from_state": current,
+                "to_state": new_state,
+                "actor": body.actor,
+                "actor_role": body.actor_role,
+                "notes": body.notes,
+                "ai_suggestion": None,
+                "human_correction": body.correction,
+            }
+        )
+    except Exception as e:
+        logger.warning("Failed to create HITL event for %s: %s", req_id, e)
+
+    history = req.get("hitl_history") or []
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "from": current,
+            "to": new_state,
+            "actor": body.actor,
+            "actor_role": body.actor_role,
+            "notes": body.notes,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    updates = {
+        "hitl_state": new_state,
+        "hitl_history": history,
+    }
+    try:
+        updated = update_requirement(req_id, engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+    return updated
+
+
+@router.post("/requirements/{req_id}/hitl-reject", response_model=RequirementResponse)
+def hitl_reject(req_id: str, engagement_id: str, body: HitlRejectRequest):
+    """Reject or send a requirement back in the HITL pipeline."""
+    try:
+        req = get_requirement_by_id(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+
+    current = (req.get("hitl_state") or "ai_draft").lower()
+    target = (body.target_state or "ai_draft").lower()
+    allowed_states = set(_HITL_STATES_ORDERED) | {"out_of_scope"}
+    if target not in allowed_states:
+        raise HTTPException(
+            status_code=400,
+            detail="target_state must be one of ai_draft, needs_sme_review, needs_architect_review, approved, out_of_scope",
+        )
+
+    try:
+        create_hitl_event(
+            {
+                "req_id": req_id,
+                "engagement_id": engagement_id,
+                "from_state": current,
+                "to_state": target,
+                "actor": body.actor,
+                "actor_role": None,
+                "notes": body.reason,
+                "ai_suggestion": None,
+                "human_correction": None,
+            }
+        )
+    except Exception as e:
+        logger.warning("Failed to create HITL reject event for %s: %s", req_id, e)
+
+    history = req.get("hitl_history") or []
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "from": current,
+            "to": target,
+            "actor": body.actor,
+            "notes": body.reason,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    updates = {
+        "hitl_state": target,
+        "hitl_history": history,
+        "reviewer_notes": body.reason,
     }
     try:
         updated = update_requirement(req_id, engagement_id, updates)
@@ -1489,6 +1658,66 @@ def get_engagement_summary(engagement_id: str):
         "requirements_by_tag": by_tag,
         "total_analysed": by_status.get("analysed", 0),
         "gap_results_summary": gap_results_summary,
+    }
+
+
+@router.get("/engagement/{engagement_id}/hitl-queue")
+def get_hitl_queue(engagement_id: str):
+    """Return HITL queue for an engagement, grouped by state with summary."""
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {
+        "ai_draft": [],
+        "needs_sme_review": [],
+        "needs_architect_review": [],
+        "approved": [],
+        "out_of_scope": [],
+    }
+    by_state_counts: Dict[str, int] = {k: 0 for k in buckets.keys()}
+    by_process: Dict[str, Dict[str, int]] = {}
+
+    for req in requirements:
+        state = (req.get("hitl_state") or "ai_draft").lower()
+        if state not in buckets:
+            state = "ai_draft"
+        buckets[state].append(req)
+        by_state_counts[state] = by_state_counts.get(state, 0) + 1
+
+        bp = req.get("business_process") or "Unspecified"
+        if bp not in by_process:
+            by_process[bp] = {k: 0 for k in buckets.keys()}
+        by_process[bp][state] = by_process[bp].get(state, 0) + 1
+
+    summary = {
+        "total": len(requirements),
+        "by_state": by_state_counts,
+        "by_process": by_process,
+    }
+
+    return {
+        "engagement_id": engagement_id,
+        "ai_draft": buckets["ai_draft"],
+        "needs_sme_review": buckets["needs_sme_review"],
+        "needs_architect_review": buckets["needs_architect_review"],
+        "approved": buckets["approved"],
+        "out_of_scope": buckets["out_of_scope"],
+        "summary": summary,
+    }
+
+
+@router.get("/engagement/{engagement_id}/hitl-events")
+def get_hitl_events(engagement_id: str):
+    """Return HITL events audit trail for an engagement."""
+    try:
+        events = list_hitl_events(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "engagement_id": engagement_id,
+        "events": events,
     }
 
 
@@ -2967,6 +3196,32 @@ ALTER TABLE requirements ADD COLUMN IF NOT EXISTS fit_type text;
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS related_test_case_id text;
 """
 
+_HITL_DDL = """
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS hitl_state text DEFAULT 'ai_draft';
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS hitl_history jsonb DEFAULT '[]';
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS ai_rationale text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS reviewer_notes text;
+
+CREATE TABLE IF NOT EXISTS hitl_events (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id        text NOT NULL UNIQUE,
+  req_id          text NOT NULL,
+  engagement_id   text NOT NULL,
+  from_state      text,
+  to_state        text NOT NULL,
+  actor           text NOT NULL,
+  actor_role      text,
+  notes           text,
+  ai_suggestion   text,
+  human_correction text,
+  created_at      timestamptz DEFAULT now()
+);
+
+ALTER TABLE hitl_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public read hitl_events" ON hitl_events FOR SELECT USING (true);
+CREATE POLICY "public insert hitl_events" ON hitl_events FOR INSERT WITH CHECK (true);
+"""
+
 # Reference table: user, role, engagement_id — for verifying access and future restriction
 _USER_ENGAGEMENT_ACCESS_DDL = """
 CREATE TABLE IF NOT EXISTS user_engagement_access (
@@ -3024,21 +3279,22 @@ def run_migrations():
             cur.execute(_CLIENTS_EXTRA_DDL)
             cur.execute(_ENGAGEMENTS_EXTRA_DDL)
             cur.execute(_REQUIREMENTS_EXTRA_DDL)
+            cur.execute(_HITL_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients columns, engagements columns, requirements columns, and user_engagement_access ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients columns, engagements columns, requirements columns, HITL tables, and user_engagement_access ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
     }
 
 
