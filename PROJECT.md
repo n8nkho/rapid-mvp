@@ -11,13 +11,14 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-02 (Phase B complete)
+**Last updated:** 2026-03-02 (Phase C complete)
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
 - Gap analysis (244 scope items), analyse-all
 - HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events
 - **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate (from approved gap_ricefw assessments → ricefw_inventory)
 - Engagement summary, process-mirror, KPI summary
 - Process steps CRUD + extract; workflow BPMN
 - RICEFW inventory (list, add, edit, delete, export Excel)
@@ -26,8 +27,9 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 
 **RECENT CHANGES:**
 - Phase B complete: fit_gap_assessments DDL in run_migrations; database.py (create/get/update); main.py endpoints (fit-gap-assess idempotent, fit-gap-board, review, fit-gap-analyse-all). Frontend /fitgap (board + process view, Analyse All, review modal).
-- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` (after Phase B). New tag after each phase for rollback.
-- Next: Phase C (RICEFW from approved gaps), then D–F per REFINED_BACKLOG.md.
+- Phase C complete: POST /engagement/{id}/ricefw-generate creates RICEFW from approved gap_ricefw; skips req_ids that already have an item.
+- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`. New tag after each phase for rollback.
+- Next: Phase D (pattern library & feedback), then E–F per REFINED_BACKLOG.md.
 
 ## Architecture decisions
 - scope_items.py in-memory (not Supabase) - avoids timeout

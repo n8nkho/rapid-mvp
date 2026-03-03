@@ -3368,6 +3368,54 @@ def fit_gap_analyse_all(engagement_id: str):
     return {"engagement_id": engagement_id, "processed": created}
 
 
+@router.post("/engagement/{engagement_id}/ricefw-generate", status_code=200)
+def ricefw_generate_from_gaps(engagement_id: str):
+    """From approved fit_gap_assessments with fit_type=gap_ricefw, create ricefw_inventory items. Skips req_ids that already have a RICEFW item."""
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    gap_ricefw_approved = [
+        a for a in assessments
+        if (a.get("hitl_state") or "").lower() == "approved"
+        and (a.get("fit_type") or "").lower() == "gap_ricefw"
+    ]
+    existing_ricefw = get_ricefw_by_engagement(engagement_id)
+    req_ids_with_ricefw = {item.get("req_id") for item in existing_ricefw if item.get("req_id")}
+    requirements = get_requirements_by_engagement(engagement_id)
+    req_map = {r["req_id"]: r for r in requirements}
+    created = 0
+    skipped = 0
+    for a in gap_ricefw_approved:
+        req_id = a.get("req_id")
+        if not req_id or req_id in req_ids_with_ricefw:
+            skipped += 1
+            continue
+        req = req_map.get(req_id) or {}
+        title = (req.get("title") or a.get("requirement_title") or req_id).strip() or req_id
+        description = (a.get("rationale") or title)[:2000]
+        # RICEFW complexity is very_high|high|medium|low; fit/gap uses XS|S|M|L|XL — pass None to avoid invalid value
+        try:
+            create_ricefw_item(
+                engagement_id=engagement_id,
+                item_type="E",
+                name=title,
+                req_id=req_id,
+                description=description,
+                status="identified",
+                complexity=None,
+                priority=None,
+            )
+            created += 1
+            req_ids_with_ricefw.add(req_id)
+        except Exception as e:
+            logger.warning("ricefw-generate: failed to create for %s: %s", req_id, e)
+            skipped += 1
+    return {
+        "engagement_id": engagement_id,
+        "created": created,
+        "skipped": skipped,
+        "message": f"Created {created} RICEFW item(s) from approved Gap RICEFW assessments; skipped {skipped}.",
+    }
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
