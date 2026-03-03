@@ -1,0 +1,29 @@
+---
+description: For every feature, confirm Build–Test–Defect clean–Commit–Deploy–Ready before done
+alwaysApply: true
+---
+
+# Feature completion checklist (must)
+
+For **every feature**, before considering the work complete, confirm this with the user:
+
+1. **Build** – Project builds (e.g. `npm run build` / `uvicorn` or tests run).
+2. **Test** – Relevant tests run and pass; manual/curl checks done where applicable.
+3. **Defect clean** – No known defects; fix or document any open issues.
+4. **Commit** – Changes committed with a clear message (e.g. `feat: ...`, `fix: ...`).
+5. **Deploy** – Deployed to the target environment (e.g. Railway, Vercel) if the feature is deployable.
+6. **Ready** – Explicitly state: **Ready to check** so the user knows they can review and share the next feature.
+
+At the end of a feature, output a short **Feature completion** block, for example:
+
+```
+Feature completion
+- Build: done
+- Test: done
+- Defect clean: done
+- Commit: done
+- Deploy: done (or N/A)
+- Ready to check: yes
+```
+
+If any step was skipped (e.g. no deploy for a docs-only change), say so. The user relies on this to know whether to check and share the next feature.

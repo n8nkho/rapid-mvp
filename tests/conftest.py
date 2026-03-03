@@ -7,3 +7,6 @@ import os
 os.environ.setdefault("SUPABASE_URL", "https://fake.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "fake-supabase-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-fake")
+
+# All data routes are under /v1
+API_PREFIX = "/v1"

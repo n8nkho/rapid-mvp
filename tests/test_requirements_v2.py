@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import app  # noqa: E402
+from tests.conftest import API_PREFIX
 
 ENGAGEMENT = "eng-v2-test"
 
@@ -64,7 +65,7 @@ class TestRequirementCreateV2:
     def test_full_v2_payload(self, client):
         created = _make_req("REQ-001")
         with patch("main.create_requirement", return_value=created):
-            resp = client.post("/requirements", json={
+            resp = client.post(f"{API_PREFIX}/requirements", json={
                 "engagement_id": ENGAGEMENT,
                 "title": "Invoice approval workflow",
                 "description": "Finance team manually approves invoices",
@@ -98,7 +99,7 @@ class TestRequirementCreateV2:
         """When optional v2 fields are omitted, defaults should be used."""
         created = _make_req("REQ-002", priority="Must-Have", sign_off_status="draft", confidence_score=0.8)
         with patch("main.create_requirement", return_value=created):
-            resp = client.post("/requirements", json={
+            resp = client.post(f"{API_PREFIX}/requirements", json={
                 "engagement_id": ENGAGEMENT,
                 "title": "Minimal requirement",
                 "description": "Just the basics",
@@ -113,7 +114,7 @@ class TestRequirementCreateV2:
         """Ensure all new fields flow from endpoint body to create_requirement."""
         created = _make_req("REQ-003")
         with patch("main.create_requirement", return_value=created) as mock_create:
-            client.post("/requirements", json={
+            client.post(f"{API_PREFIX}/requirements", json={
                 "engagement_id": ENGAGEMENT,
                 "title": "Test",
                 "description": "Test desc",
@@ -143,7 +144,7 @@ class TestSignOffWorkflow:
             patch("main.update_requirement", return_value=updated),
         ):
             return client.post(
-                f"/requirements/{req['req_id']}/sign-off",
+                f"{API_PREFIX}/requirements/{req['req_id']}/sign-off",
                 params={"engagement_id": ENGAGEMENT},
                 json={"level": level, "signed_by": signed_by},
             )
@@ -172,7 +173,7 @@ class TestSignOffWorkflow:
 
     def test_invalid_level_returns_400(self, client):
         resp = client.post(
-            "/requirements/REQ-001/sign-off",
+            f"{API_PREFIX}/requirements/REQ-001/sign-off",
             params={"engagement_id": ENGAGEMENT},
             json={"level": "ceo", "signed_by": "Dave"},
         )
@@ -182,7 +183,7 @@ class TestSignOffWorkflow:
     def test_missing_requirement_returns_404(self, client):
         with patch("main.get_requirement_by_id", return_value=None):
             resp = client.post(
-                "/requirements/REQ-999/sign-off",
+                f"{API_PREFIX}/requirements/REQ-999/sign-off",
                 params={"engagement_id": ENGAGEMENT},
                 json={"level": "sme", "signed_by": "Eve"},
             )
@@ -204,7 +205,7 @@ class TestSignOffWorkflow:
             _make_req("REQ-005", sign_off_status="draft"),
         ]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/sign-off-status")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/sign-off-status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 5
@@ -220,7 +221,7 @@ class TestSignOffWorkflow:
             _make_req("REQ-003", sign_off_status="confirmed", business_process="Procure-to-Pay"),
         ]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/sign-off-status")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/sign-off-status")
         data = resp.json()
         assert "Order-to-Cash" in data["by_process"]
         assert data["by_process"]["Order-to-Cash"]["draft"] == 1
@@ -241,7 +242,7 @@ class TestDomainTemplates:
         ("hr", 2),
     ])
     def test_domain_returns_min_templates(self, client, domain, expected_min):
-        resp = client.get(f"/requirements/templates?domain={domain}")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain={domain}")
         assert resp.status_code == 200
         data = resp.json()
         assert data["domain"] == domain
@@ -249,26 +250,26 @@ class TestDomainTemplates:
         assert len(data["templates"]) >= expected_min
 
     def test_finance_has_automation_must_have(self, client):
-        resp = client.get("/requirements/templates?domain=finance")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=finance")
         data = resp.json()
         automation = [t for t in data["templates"] if t["category"] == "Automation" and t["priority"] == "Must-Have"]
         assert len(automation) >= 1
 
     def test_finance_has_control_compliance(self, client):
-        resp = client.get("/requirements/templates?domain=finance")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=finance")
         data = resp.json()
         ctrl = [t for t in data["templates"] if t["category"] == "Control/Compliance"]
         assert len(ctrl) >= 1
 
     def test_finance_month_end_kpi(self, client):
-        resp = client.get("/requirements/templates?domain=finance")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=finance")
         data = resp.json()
         reporting = [t for t in data["templates"] if t["category"] == "Reporting"]
         assert len(reporting) >= 1
         assert reporting[0]["kpi_impact"] is not None
 
     def test_templates_have_required_fields(self, client):
-        resp = client.get("/requirements/templates?domain=sales")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=sales")
         data = resp.json()
         for t in data["templates"]:
             assert "title" in t
@@ -281,28 +282,28 @@ class TestDomainTemplates:
     def test_templates_not_persisted(self, client):
         """Templates endpoint must not call create_requirement."""
         with patch("main.create_requirement") as mock_create:
-            resp = client.get("/requirements/templates?domain=procurement")
+            resp = client.get(f"{API_PREFIX}/requirements/templates?domain=procurement")
         mock_create.assert_not_called()
         assert resp.status_code == 200
 
     def test_invalid_domain_returns_400(self, client):
-        resp = client.get("/requirements/templates?domain=logistics")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=logistics")
         assert resp.status_code == 400
         assert "Valid options" in resp.json()["detail"]
 
     def test_case_insensitive_domain(self, client):
-        resp = client.get("/requirements/templates?domain=Finance")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=Finance")
         assert resp.status_code == 200
         assert resp.json()["domain"] == "finance"
 
     def test_manufacturing_has_automation(self, client):
-        resp = client.get("/requirements/templates?domain=manufacturing")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=manufacturing")
         data = resp.json()
         automation = [t for t in data["templates"] if t["category"] == "Automation"]
         assert len(automation) >= 1
 
     def test_hr_hire_to_retire_process(self, client):
-        resp = client.get("/requirements/templates?domain=hr")
+        resp = client.get(f"{API_PREFIX}/requirements/templates?domain=hr")
         data = resp.json()
         for t in data["templates"]:
             assert t["business_process"] == "Hire-to-Retire"
@@ -328,7 +329,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[self.SAMPLE_GAP]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         assert resp.status_code == 200
         data = resp.json()
         assert "requirement" in data
@@ -342,7 +343,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         assert data["requirement"]["req_id"] == "REQ-001"
         assert data["requirement"]["business_process"] == "Record-to-Report"
@@ -356,7 +357,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         ev = data["as_is_evidence"]
         assert ev["current_state_ref"] == "Video timestamp 12:34"
@@ -370,7 +371,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[self.SAMPLE_GAP]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         ga = data["gap_analysis"]
         assert ga["total_analyses"] == 1
@@ -382,7 +383,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         assert data["gap_analysis"]["matches"] == []
         assert data["gap_analysis"]["total_analyses"] == 0
@@ -395,7 +396,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         who = data["answer_to"]["who_asked"]
         assert "CFO" in who
@@ -409,7 +410,7 @@ class TestTraceability:
             patch("main.get_requirement_by_id", return_value=req),
             patch("main.get_gap_results_by_req_id", return_value=[]),
         ):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         data = resp.json()
         problem = data["answer_to"]["what_problem"]
         assert "pain_point" in problem or "manual_step" in problem
@@ -417,12 +418,12 @@ class TestTraceability:
 
     def test_not_found_returns_404(self, client):
         with patch("main.get_requirement_by_id", return_value=None):
-            resp = client.get(f"/requirements/REQ-999/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-999/traceability?engagement_id={ENGAGEMENT}")
         assert resp.status_code == 404
 
     def test_db_error_returns_500(self, client):
         with patch("main.get_requirement_by_id", side_effect=Exception("DB error")):
-            resp = client.get(f"/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
+            resp = client.get(f"{API_PREFIX}/requirements/REQ-001/traceability?engagement_id={ENGAGEMENT}")
         assert resp.status_code == 500
 
 
@@ -442,7 +443,7 @@ class TestKpiSummary:
             _make_req("REQ-004", business_process="Record-to-Report", kpi_impact=None),
         ]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/kpi-summary")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/kpi-summary")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_with_kpi"] == 3
@@ -455,7 +456,7 @@ class TestKpiSummary:
         reqs = [_make_req("REQ-001", business_process="Order-to-Cash",
                           kpi_impact={"metric": "close time", "target": "3 days", "unit": "days"})]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/kpi-summary")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/kpi-summary")
         data = resp.json()
         entry = data["by_process"]["Order-to-Cash"][0]
         assert entry["req_id"] == "REQ-001"
@@ -466,7 +467,7 @@ class TestKpiSummary:
     def test_empty_when_no_kpi(self, client):
         reqs = [_make_req("REQ-001", kpi_impact=None), _make_req("REQ-002", kpi_impact=None)]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/kpi-summary")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/kpi-summary")
         data = resp.json()
         assert data["total_with_kpi"] == 0
         assert data["by_process"] == {}
@@ -475,11 +476,11 @@ class TestKpiSummary:
         reqs = [_make_req("REQ-001", business_process=None,
                           kpi_impact={"metric": "time", "target": "50%", "unit": "hours"})]
         with patch("main.get_requirements_by_engagement", return_value=reqs):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/kpi-summary")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/kpi-summary")
         data = resp.json()
         assert "Unclassified" in data["by_process"]
 
     def test_db_error_returns_500(self, client):
         with patch("main.get_requirements_by_engagement", side_effect=Exception("timeout")):
-            resp = client.get(f"/engagement/{ENGAGEMENT}/kpi-summary")
+            resp = client.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/kpi-summary")
         assert resp.status_code == 500

@@ -3,14 +3,32 @@
 ## Project
 FastAPI backend, Python, deployed on Railway.
 Production URL: https://rapid-mvp-production.up.railway.app
-Frontend: https://rapid-ui-wine.vercel.app
+**API base path:** All data/action routes are under `/v1` (e.g. `/v1/clients`, `/v1/requirements`). Health is unversioned: `/health`, `/health/ready`.
+Frontend: https://rapid-ui-wine.vercel.app (must use base URL ending in `/v1`).
 Run locally: uvicorn main:app --reload --port 8000
 
 ## CORS
-Allow all origins from https://rapid-ui-wine.vercel.app and localhost:3000.
+Controlled by env: `CORS_ORIGINS` (comma-separated). If unset, defaults to https://rapid-ui-wine.vercel.app and http://localhost:3000. Do not use `*` in production.
+
+## Config and security
+- **Env validation:** Required vars (SUPABASE_URL, SUPABASE_KEY) are validated at startup; app fails fast if missing. See `.env.example` and README.md.
+- **Admin:** `POST /admin/migrate` is protected when `ADMIN_API_KEY` is set; send header `X-Admin-Key: <value>`.
+- **5xx responses:** Global exception handlers return a generic message and `request_id`; internal details are logged only.
 
 ## Key Models
 Client, Engagement, Requirement, Conversation, ProcessStep
+
+## Client (extended)
+- Standard: name, industry, employees, legal_entities, current_systems, systems_to_keep, systems_to_replace, countries, regulatory_environment
+- Strategy/context (pre-fill from website): business_strategy, goals (array), key_products (array), value_proposition, senior_executives (array of {name, title}), direct_competitors (array), substitutes (array)
+- **Prefill:** `POST /v1/clients/prefill-from-website` body `{ "url": "https://..." }` — fetches page, LLM extracts profile JSON to pre-populate Create Client form.
+- **DB:** If adding new columns, run in Supabase SQL: `ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_strategy text;` (and goals, key_products, value_proposition, senior_executives jsonb, direct_competitors jsonb, substitutes jsonb).
+
+## Requirements: reference_id and RTM import
+- **reference_id:** Optional field on requirements — stores external/source requirement ID (e.g. Excel RTM "Requirement ID" like FI-001) for audit trail. Internal id remains REQ-XXX.
+- **New fields:** business_value, current_system, target_system_module, fit_type, related_test_case_id (all optional). Added via `POST /v1/admin/migrate`.
+- **RTM Excel import:** `POST /v1/engagement/{engagement_id}/requirements/import` accepts RTM format (sheet "RTM" or first sheet with header row containing "Requirement ID", "Requirement Title", "Requirement Description"). Uses internal REQ-XXX numbering and stores Excel Requirement ID in reference_id. Map: Business Process Area → business_process, Sub-Process → process_level_2, Priority (High/Medium/Low) → Must-Have/Should-Have/Nice-to-Have, Source → stakeholder, Status → status, plus business_value, current_system, target_system_module, fit_type, related_test_case_id.
+- **Script:** `python scripts/import_rtm_engagement.py ENG-001 /path/to/RAPID_RTM_Acme_S4.xlsx` to populate Engagement 001 from the RTM Excel.
 
 ## ProcessStep Schema
 - id (uuid)
@@ -48,9 +66,19 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - Endpoints: GET/POST /engagement/{engagement_id}/ricefw, PATCH/DELETE /engagement/{engagement_id}/ricefw/{item_id}
 - Run POST /admin/migrate (or SQL in Supabase) to create ricefw_inventory.
 
+## User–engagement access (reference table)
+- **Table:** `user_engagement_access` — columns: `id` (uuid), `user_id` (text), `role` (text, e.g. owner/member/viewer), `engagement_id` (text), `created_at`, `updated_at`. Unique on (user_id, engagement_id).
+- **Purpose:** Verify user and role per engagement; use to restrict access (e.g. list engagements by owner, enforce per-engagement checks). Created by `POST /v1/admin/migrate`. No API yet to populate or query; add when implementing real auth.
+
+## Engagement scope and client data privacy
+- **All work is scoped to a single engagement.** Requirements, RICEFW, process steps, assets, gap results, and analyses are always tied to an `engagement_id`. As a consulting company there are multiple engagements and clients; data must never be mixed across engagements.
+- **Enforce engagement on every endpoint:** Read/update/delete must filter by `engagement_id`. When linking entities (e.g. RICEFW `req_id`), validate that the linked requirement belongs to the same engagement (return 400 if not).
+- **Client data privacy is paramount.** Do not expose or combine data across engagements; do not allow cross-engagement references in create/update payloads.
+
 ## Conventions
 - UUID for all IDs
 - Return JSON always
 - Fix all errors before committing
 - Commit format: "feat: ...", "fix: ..."
 - Test endpoints with curl after changes
+- **Feature completion (must):** For every feature, confirm Build → Test → Defect clean → Commit → Deploy → Ready to check before done (see `.cursor/rules/feature-completion.mdc`).
