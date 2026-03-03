@@ -60,6 +60,10 @@ from database import (
     get_fit_gap_by_engagement,
     get_fit_gap_by_assessment_id,
     update_fit_gap_assessment,
+    create_feedback_event,
+    list_feedback_events,
+    get_pattern_library,
+    increment_pattern_use,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -438,6 +442,13 @@ class RICEFWUpdate(BaseModel):
     status: Optional[str] = None
     complexity: Optional[str] = None
     priority: Optional[str] = None
+
+
+# Phase D: Feedback
+class FeedbackCreate(BaseModel):
+    engagement_id: Optional[str] = None
+    event_type: str = "general"  # general | pattern_used | correction | suggestion
+    payload: Optional[Dict[str, Any]] = None  # e.g. {"pattern_id": "uuid"} for pattern_used
 
 
 # Phase B: Fit/Gap
@@ -1206,11 +1217,14 @@ def _extract_json_object(text: str) -> dict:
 def archaeologist_session(body: ArchaeologistSessionRequest):
     provider = get_provider()
 
-    # Inject client context into system prompt
+    # Inject client context and top patterns into system prompt
     system_prompt = _ARCHAEOLOGIST_SYSTEM_PROMPT
     client_context = _build_client_context_line(body.engagement_id)
     if client_context:
         system_prompt = system_prompt + f"\n\nEngagement context: {client_context}"
+    patterns = _get_top_patterns_text(limit=5)
+    if patterns:
+        system_prompt = system_prompt + "\n\n" + patterns
 
     # Build conversation as a single user message (history + current turn)
     lines = [
@@ -3202,6 +3216,9 @@ def fit_gap_assess(req_id: str, engagement_id: str):
         top_matches=top_matches_str,
     )
     system_prompt = _FIT_GAP_SYSTEM.format(context=context)
+    patterns = _get_top_patterns_text(limit=5)
+    if patterns:
+        system_prompt = system_prompt + "\n\n" + patterns
 
     try:
         provider = get_provider()
@@ -3371,15 +3388,28 @@ def fit_gap_analyse_all(engagement_id: str):
 @router.post("/engagement/{engagement_id}/ricefw-generate", status_code=200)
 def ricefw_generate_from_gaps(engagement_id: str):
     """From approved fit_gap_assessments with fit_type=gap_ricefw, create ricefw_inventory items. Skips req_ids that already have a RICEFW item."""
-    assessments = get_fit_gap_by_engagement(engagement_id)
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    try:
+        assessments = get_fit_gap_by_engagement(engagement_id)
+    except Exception as e:
+        logger.exception("ricefw-generate: get_fit_gap_by_engagement failed")
+        raise HTTPException(status_code=500, detail="Fit/Gap data unavailable. Run migrations and ensure Fit/Gap board is loaded.")
     gap_ricefw_approved = [
         a for a in assessments
         if (a.get("hitl_state") or "").lower() == "approved"
         and (a.get("fit_type") or "").lower() == "gap_ricefw"
     ]
-    existing_ricefw = get_ricefw_by_engagement(engagement_id)
+    try:
+        existing_ricefw = get_ricefw_by_engagement(engagement_id)
+        requirements = get_requirements_by_engagement(engagement_id)
+    except Exception as e:
+        logger.exception("ricefw-generate: get_ricefw or get_requirements failed")
+        raise HTTPException(status_code=500, detail="Could not load RICEFW or requirements. Try again.")
+    existing_ricefw = existing_ricefw or []
+    requirements = requirements or []
     req_ids_with_ricefw = {item.get("req_id") for item in existing_ricefw if item.get("req_id")}
-    requirements = get_requirements_by_engagement(engagement_id)
     req_map = {r["req_id"]: r for r in requirements}
     created = 0
     skipped = 0
@@ -3414,6 +3444,61 @@ def ricefw_generate_from_gaps(engagement_id: str):
         "skipped": skipped,
         "message": f"Created {created} RICEFW item(s) from approved Gap RICEFW assessments; skipped {skipped}.",
     }
+
+
+# ── Phase D: Feedback & Pattern Library ───────────────────────────────────────
+
+def _get_top_patterns_text(limit: int = 5) -> str:
+    """Return top patterns by use_count as a single string for prompt injection."""
+    try:
+        patterns = get_pattern_library(limit=limit)
+    except Exception:
+        return ""
+    if not patterns:
+        return ""
+    lines = ["Relevant patterns from the library (use to guide responses):"]
+    for p in patterns:
+        name = p.get("name") or "Pattern"
+        content = (p.get("content") or "").strip()
+        if content:
+            lines.append(f"- {name}: {content[:500]}")
+    return "\n".join(lines) + "\n\n" if lines else ""
+
+
+@router.post("/feedback", status_code=201)
+def post_feedback(body: FeedbackCreate):
+    """Record a feedback event. If event_type=pattern_used and payload.pattern_id is set, increments that pattern's use_count."""
+    try:
+        event = create_feedback_event(
+            engagement_id=body.engagement_id,
+            event_type=(body.event_type or "general").lower(),
+            payload=body.payload or {},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if (body.event_type or "").lower() == "pattern_used" and body.payload and body.payload.get("pattern_id"):
+        increment_pattern_use(body.payload["pattern_id"])
+    return event
+
+
+@router.get("/feedback")
+def get_feedback(engagement_id: Optional[str] = None, limit: int = 50):
+    """List recent feedback events, optionally filtered by engagement_id."""
+    try:
+        items = list_feedback_events(engagement_id=engagement_id, limit=min(limit, 100))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/pattern-library")
+def get_pattern_library_endpoint(limit: int = 50):
+    """List pattern library entries ordered by use_count descending."""
+    try:
+        items = get_pattern_library(limit=min(limit, 100))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"items": items, "total": len(items)}
 
 
 # ── Admin Migrations ──────────────────────────────────────────────────────────
@@ -3568,6 +3653,63 @@ CREATE INDEX IF NOT EXISTS idx_user_engagement_access_engagement ON user_engagem
 COMMENT ON TABLE user_engagement_access IS 'Reference: verify user and role per engagement for access control';
 """
 
+# Phase D: feedback and pattern library
+_FEEDBACK_PATTERN_DDL = """
+CREATE TABLE IF NOT EXISTS feedback_events (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id   text,
+  event_type      text NOT NULL DEFAULT 'general',
+  payload         jsonb DEFAULT '{}',
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_engagement ON feedback_events (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback_events (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS pattern_library (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name            text NOT NULL,
+  category        text DEFAULT 'general',
+  content         text NOT NULL,
+  use_count       int DEFAULT 0,
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pattern_use_count ON pattern_library (use_count DESC);
+"""
+
+# Seed patterns for Phase D (business/process discovery and fit-gap)
+_PATTERN_SEED = [
+    ("Probe workarounds", "discovery", "Ask what people do when the system blocks them or is slow; document workarounds and shadow tools."),
+    ("Exception volume", "discovery", "Clarify how often exceptions occur; high volume may justify automation or process change."),
+    ("Hand-off clarity", "discovery", "Identify hand-offs between roles or systems; unclear hand-offs are a source of rework."),
+    ("Pain point tagging", "discovery", "Tag requirements that describe pain points, manual steps, or secret sauce for prioritisation."),
+    ("SAP standard first", "fit-gap", "Prefer fit_standard or fit_config before recommending customisation; only gap when standard cannot meet the need."),
+    ("Clean core", "fit-gap", "Prefer key-user or BTP side-by-side over on-stack customisation to protect clean core."),
+    ("Scope item match", "fit-gap", "When initial gap analysis found a strong scope item match, reference it in the fit-type rationale."),
+    ("Effort band", "fit-gap", "Estimate effort in person-days; use cost_band for budget alignment (<5k, 5k-20k, 20k-100k, >100k)."),
+    ("Configuration over code", "fit-gap", "fit_config: achievable via SPRO, customising, or parameters only; no development."),
+    ("Extension types", "fit-gap", "fit_extension: BAdI, key-user tool, or BTP app; gap_ricefw: custom RICEFW development."),
+    ("Companion solution", "fit-gap", "gap_companion: requirement is better met by a third-party solution than by custom build."),
+    ("Out of scope", "fit-gap", "out_of_scope: not in project scope, deferred, or not S/4HANA responsibility."),
+    ("Stakeholder context", "discovery", "Use stakeholder role and business process to tailor follow-up questions."),
+    ("Actors and systems", "discovery", "Extract actors and systems used; these inform RACI and integration scope."),
+    ("Priority signals", "discovery", "Must-have vs nice-to-have often revealed by 'what happens if we don\'t fix this'."),
+    ("Regulatory mention", "fit-gap", "If requirement mentions compliance or regulatory need, note it in rationale."),
+    ("Integration touchpoints", "discovery", "Note integrations with other systems; these may become Interfaces or Conversions."),
+    ("Report vs dashboard", "fit-gap", "Reporting needs: standard report (fit), analytics/dashboard (often fit_extension or gap)."),
+    ("Data migration", "fit-gap", "Historical data or master data loads are often Conversions (C) in RICEFW."),
+    ("Approval workflows", "fit-gap", "Multi-step approvals: check if standard workflow suffices (fit_config) or custom workflow needed (gap)."),
+    ("Multi-currency", "fit-gap", "Multi-currency and multi-country are often fit_config or fit_standard in S/4HANA."),
+    ("Industry specificity", "fit-gap", "Industry solutions may cover the requirement (fit_standard); check scope items by industry."),
+    ("Rework causes", "discovery", "Ask what causes rework or duplicate entry; these are improvement opportunities."),
+    ("Volume and frequency", "discovery", "Clarify volume (e.g. per month) and frequency; drives complexity and fit-type."),
+    ("As-is vs to-be", "discovery", "Capture as-is process first; to-be can be derived in a later workshop."),
+    ("SME validation", "fit-gap", "Recommend SME or architect review for gap_ricefw and high-effort items."),
+    ("Risk and clean core", "fit-gap", "customisation_risk and clean_core_impact guide upgrade and maintenance impact."),
+    ("Follow-up questions", "discovery", "Suggest 2–3 short follow-up questions to deepen understanding."),
+    ("Requirement title", "discovery", "Extract a concise requirement title (noun phrase) for traceability."),
+    ("Rationale length", "fit-gap", "Keep rationale to 2–3 sentences; reference scope item or standard capability where relevant."),
+]
+
 
 def _get_pg_dsn() -> str:
     """Build PostgreSQL DSN from Supabase URL and key."""
@@ -3612,20 +3754,28 @@ def run_migrations():
             cur.execute(_HITL_DDL)
             cur.execute(_FIT_GAP_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
+            cur.execute(_FEEDBACK_PATTERN_DDL)
+            cur.execute("SELECT COUNT(*) FROM pattern_library")
+            if cur.fetchone()[0] == 0:
+                for name, category, content in _PATTERN_SEED:
+                    cur.execute(
+                        "INSERT INTO pattern_library (name, category, content) VALUES (%s, %s, %s)",
+                        (name, category, content),
+                    )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
     }
 
 

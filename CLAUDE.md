@@ -90,12 +90,18 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **fit_type:** fit_standard | fit_config | fit_extension | gap_ricefw | gap_companion | out_of_scope. Board returns by_fit_type, by_process, summary (total, fit_count, gap_count, ai_draft, approved, effort days, complexity_breakdown).
 
 ## RICEFW from gaps (Phase C)
-- **Endpoint:** POST /v1/engagement/{engagement_id}/ricefw-generate — from approved fit_gap_assessments where fit_type=gap_ricefw, creates ricefw_inventory items (type E, name=requirement title, description=rationale or title, status=identified). Skips req_ids that already have a RICEFW item. Returns { engagement_id, created, skipped, message }.
+- **Endpoint:** POST /v1/engagement/{engagement_id}/ricefw-generate — from approved fit_gap_assessments where fit_type=gap_ricefw, creates ricefw_inventory items (type E, name=requirement title, description=rationale or title, status=identified). Skips req_ids that already have a RICEFW item. Returns { engagement_id, created, skipped, message }. Validates engagement exists (404 if not).
+
+## Feedback & pattern library (Phase D)
+- **Tables:** feedback_events (engagement_id, event_type, payload jsonb); pattern_library (name, category, content, use_count). Created via run_migrations; pattern_library seeded with 30 patterns if empty.
+- **Endpoints:** POST /v1/feedback (body: engagement_id?, event_type, payload?; event_type=pattern_used + payload.pattern_id increments use_count); GET /v1/feedback?engagement_id=&limit=; GET /v1/pattern-library?limit=.
+- **Prompt injection:** _get_top_patterns_text(limit=5) prepended to archaeologist and fit-gap system prompts when patterns exist.
 
 ## Current status / recent changes (for new agents)
 - **PROJECT.md** in this repo has "Current Status / Recent Changes" with working features and last updates.
-- **REFINED_BACKLOG.md** defines phased implementation (Phase A, B, **C** done; D = patterns, E = benchmarks, F = Excel polish).
-- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`. New tag after each phase.
+- **REFINED_BACKLOG.md** defines phased implementation (Phase A, B, C, **D** done; E = benchmarks, F = Excel polish).
+- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`; `rapid-fallback-phase-d`. New tag after each phase.
 - **HITL:** hitl_state on requirements; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
 - **Fit/Gap:** fit_gap_assessments table and endpoints above. Frontend: /fitgap (board + process view, Analyse All, review).
-- **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement RICEFW section (#ricefw).
+- **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement RICEFW section (#ricefw). Engagement existence checked (404 if missing).
+- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; top patterns injected into archaeologist and fit-gap; frontend /patterns.

@@ -620,3 +620,46 @@ def update_fit_gap_assessment(assessment_id: str, engagement_id: str, updates: d
         .execute()
     )
     return response.data[0] if response.data else {}
+
+
+# ── Feedback & Pattern Library (Phase D) ────────────────────────────────────
+
+def create_feedback_event(engagement_id: str = None, event_type: str = "", payload: dict = None) -> dict:
+    record = {
+        "event_type": event_type or "general",
+        "payload": payload or {},
+    }
+    if engagement_id:
+        record["engagement_id"] = engagement_id
+    response = supabase.table("feedback_events").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def list_feedback_events(engagement_id: str = None, limit: int = 50) -> list:
+    query = supabase.table("feedback_events").select("*").order("created_at", desc=True).limit(limit)
+    if engagement_id:
+        query = query.eq("engagement_id", engagement_id)
+    return query.execute().data or []
+
+
+def get_pattern_library(limit: int = 50) -> list:
+    response = (
+        supabase.table("pattern_library")
+        .select("*")
+        .order("use_count", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return response.data or []
+
+
+def increment_pattern_use(pattern_id: str) -> None:
+    """Increment use_count for a pattern. No-op if pattern not found."""
+    try:
+        row = supabase.table("pattern_library").select("use_count").eq("id", pattern_id).limit(1).execute()
+        if not row.data or len(row.data) == 0:
+            return
+        current = row.data[0].get("use_count") or 0
+        supabase.table("pattern_library").update({"use_count": current + 1}).eq("id", pattern_id).execute()
+    except Exception:
+        pass
