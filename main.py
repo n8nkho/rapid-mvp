@@ -2629,6 +2629,7 @@ def seed_synthetic_requirements(engagement_id: str):
                 category=item.get("category"),
                 status="open",
                 tags=[],
+                hitl_state="ai_draft",
             )
             if rec:
                 created.append({"req_id": rec.get("req_id"), "title": rec.get("title")})

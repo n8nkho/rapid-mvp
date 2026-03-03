@@ -60,9 +60,16 @@ Sprint 7: RICEFW Customisation Inventory
 ## Current working features (confirmed 2026-02-28)
 - /capture page: Conversation tab, Single Requirement, Paste Transcript, Use Template
 - Requirements list with inline gap analysis, Sign Off, Traceability buttons
-- /engagement dashboard
+- /engagement dashboard (HITL state column, Review in HITL link)
+- /engagement/[id] with workflow + HITL links
+- /hitl HITL Review Board (advance/reject pipeline)
 - /gap-analysis page
+- /workflow/[reqId] BPMN As-Is workflow, extract from transcript
+- RICEFW inventory (engagement #ricefw): list, add, edit, delete, export Excel
 - 244 SAP scope items in-memory
 - Archaeologist agent using Sonnet
 - Gap analysis using Haiku
-- Supabase: requirements and gap_results tables with full v2 schema
+- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events
+
+## Value-added backlog and sequence
+See **REFINED_BACKLOG.md** — phased plan aligned with current system (no duplicate modules). Fallback tag: `rapid-fallback-2026-03-02`.
