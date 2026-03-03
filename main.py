@@ -2814,6 +2814,40 @@ def export_requirements_excel(engagement_id: str):
             r.get("related_test_case_id"),
         ])
 
+    # Phase F: optional second sheet "Fit-Gap" when fit_gap_assessments exist
+    try:
+        fga_list = get_fit_gap_by_engagement(engagement_id) or []
+    except Exception:
+        fga_list = []
+    if fga_list:
+        ws2 = wb.create_sheet("Fit-Gap")
+        fga_headers = [
+            "assessment_id", "req_id", "fit_type", "complexity", "rationale",
+            "sap_scope_item_id", "sap_scope_item_name", "workaround_option",
+            "estimated_effort_days_low", "estimated_effort_days_high", "cost_band",
+            "confidence_score", "hitl_state", "reviewed_by", "reviewed_at", "reviewer_notes",
+        ]
+        ws2.append(fga_headers)
+        for a in fga_list:
+            ws2.append([
+                a.get("assessment_id"),
+                a.get("req_id"),
+                a.get("fit_type"),
+                a.get("complexity"),
+                a.get("rationale"),
+                a.get("sap_scope_item_id"),
+                a.get("sap_scope_item_name"),
+                a.get("workaround_option"),
+                a.get("estimated_effort_days_low"),
+                a.get("estimated_effort_days_high"),
+                a.get("cost_band"),
+                a.get("confidence_score"),
+                a.get("hitl_state"),
+                a.get("reviewed_by"),
+                a.get("reviewed_at"),
+                a.get("reviewer_notes"),
+            ])
+
     stream = io.BytesIO()
     wb.save(stream)
     stream.seek(0)
@@ -2823,6 +2857,39 @@ def export_requirements_excel(engagement_id: str):
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/requirements/template/download")
+def download_requirements_template():
+    """Return an Excel template for requirements/RTM upload. Sheet 'RTM' with header row only."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RTM"
+    headers = [
+        "Requirement ID",
+        "Requirement Title",
+        "Requirement Description",
+        "Business Process Area",
+        "Sub-Process",
+        "Requirement Type",
+        "Priority",
+        "Business Value",
+        "Source",
+        "Status",
+        "Current System",
+        "Target System Module",
+        "Fit Type",
+        "Related Test Case ID",
+    ]
+    ws.append(headers)
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="RAPID_requirements_template.xlsx"'},
     )
 
 

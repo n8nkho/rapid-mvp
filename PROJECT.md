@@ -11,7 +11,7 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-02 (Phase E complete)
+**Last updated:** 2026-03-02 (Phase F complete)
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
@@ -22,15 +22,15 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - Engagement summary, process-mirror, KPI summary
 - Process steps CRUD + extract; workflow BPMN
 - RICEFW inventory (list, add, edit, delete, export Excel)
-- Requirements + RICEFW Excel export/import
+- Requirements + RICEFW Excel export/import; **Phase F:** requirements export includes optional second sheet "Fit-Gap" when fit_gap_assessments exist; GET /requirements/template/download (RTM template)
 - **Feedback & pattern library (Phase D):** feedback_events, pattern_library tables; POST /feedback, GET /feedback, GET /pattern-library; top patterns injected into archaeologist and fit-gap prompts; 30 patterns seeded in migration
 - **Sector & benchmarks (Phase E):** clients.sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints table; GET /engagement/{id}/benchmark-hints (derived from client or stored); POST /clients/{id}/benchmark-opt-out
 - Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library, benchmark_hints
 
 **RECENT CHANGES:**
-- Phase E complete: client DDL (sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in); benchmark_hints table; GET benchmark-hints (returns stored or derived from client profile); POST clients/{id}/benchmark-opt-out; update_client in database; frontend client form (Sector & benchmarks section), engagement [id] Benchmark insights section with opt-out.
-- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`; `rapid-fallback-phase-d`; `rapid-fallback-phase-e`. New tag after each phase for rollback.
-- Next: Phase F (Excel Fit-Gap sheet, template download) per REFINED_BACKLOG.md.
+- Phase F complete: requirements export adds second sheet "Fit-Gap" when fit_gap_assessments exist (assessment_id, req_id, fit_type, complexity, rationale, effort, cost_band, hitl_state, etc.); GET /requirements/template/download returns RAPID_requirements_template.xlsx (sheet RTM, header row for RTM import); frontend "Download template" button on engagement page next to Download Excel.
+- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-f`. New tag after each phase for rollback.
+- REFINED_BACKLOG Phases A–F complete.
 
 ## Architecture decisions
 - scope_items.py in-memory (not Supabase) - avoids timeout

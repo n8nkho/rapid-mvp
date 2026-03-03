@@ -105,10 +105,15 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 
 ## Current status / recent changes (for new agents)
 - **PROJECT.md** in this repo has "Current Status / Recent Changes" with working features and last updates.
-- **REFINED_BACKLOG.md** defines phased implementation (Phase A, B, C, D, **E** done; F = Excel polish).
-- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-e`. New tag after each phase.
+- **REFINED_BACKLOG.md** defines phased implementation (Phase A–**F** done).
+- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-f`. New tag after each phase.
 - **HITL:** hitl_state on requirements; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
 - **Fit/Gap:** fit_gap_assessments table and endpoints above. Frontend: /fitgap (board + process view, Analyse All, review).
 - **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement RICEFW section (#ricefw). Engagement existence checked (404 if missing).
 - **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; top patterns injected; frontend /patterns.
 - **Phase E:** client sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints; GET benchmark-hints, POST benchmark-opt-out; frontend client form "Sector & benchmarks", engagement [id] "Benchmark insights" + opt-out.
+
+## Excel export polish (Phase F)
+- **Requirements export:** GET /v1/engagement/{engagement_id}/requirements/export — first sheet "Requirements" (unchanged). When fit_gap_assessments exist for the engagement, second sheet "Fit-Gap" is added (assessment_id, req_id, fit_type, complexity, rationale, sap_scope_item_*, effort days, cost_band, confidence_score, hitl_state, reviewed_by, reviewer_notes).
+- **Template:** GET /v1/requirements/template/download — returns RAPID_requirements_template.xlsx with sheet "RTM" and header row (Requirement ID, Requirement Title, Requirement Description, Business Process Area, Sub-Process, etc.) for RTM import.
+- **Frontend:** Engagement page has "Download template" button next to "Download Excel" and "Upload Excel".
