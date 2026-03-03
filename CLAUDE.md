@@ -97,11 +97,18 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **Endpoints:** POST /v1/feedback (body: engagement_id?, event_type, payload?; event_type=pattern_used + payload.pattern_id increments use_count); GET /v1/feedback?engagement_id=&limit=; GET /v1/pattern-library?limit=.
 - **Prompt injection:** _get_top_patterns_text(limit=5) prepended to archaeologist and fit-gap system prompts when patterns exist.
 
+## Sector & benchmarks (Phase E)
+- **Client columns:** sector_archetype (text), complexity_drivers (jsonb array), erp_maturity (text), benchmark_opt_in (boolean, default true). Added via _CLIENTS_EXTRA_DDL in run_migrations.
+- **Table:** benchmark_hints (id, engagement_id, category, title, content). Created via _BENCHMARK_HINTS_DDL.
+- **Endpoints:** GET /v1/engagement/{engagement_id}/benchmark-hints — returns hints from table or derived from client (sector_archetype, erp_maturity, complexity_drivers); if client.benchmark_opt_in is false returns []. POST /v1/clients/{client_id}/benchmark-opt-out — sets benchmark_opt_in=false.
+- **database.py:** update_client(client_id, updates), get_benchmark_hints_by_engagement(engagement_id), create_benchmark_hint(...).
+
 ## Current status / recent changes (for new agents)
 - **PROJECT.md** in this repo has "Current Status / Recent Changes" with working features and last updates.
-- **REFINED_BACKLOG.md** defines phased implementation (Phase A, B, C, **D** done; E = benchmarks, F = Excel polish).
-- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`; `rapid-fallback-phase-d`. New tag after each phase.
+- **REFINED_BACKLOG.md** defines phased implementation (Phase A, B, C, D, **E** done; F = Excel polish).
+- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-e`. New tag after each phase.
 - **HITL:** hitl_state on requirements; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
 - **Fit/Gap:** fit_gap_assessments table and endpoints above. Frontend: /fitgap (board + process view, Analyse All, review).
 - **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement RICEFW section (#ricefw). Engagement existence checked (404 if missing).
-- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; top patterns injected into archaeologist and fit-gap; frontend /patterns.
+- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; top patterns injected; frontend /patterns.
+- **Phase E:** client sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints; GET benchmark-hints, POST benchmark-opt-out; frontend client form "Sector & benchmarks", engagement [id] "Benchmark insights" + opt-out.

@@ -11,7 +11,7 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-02 (Phase D complete)
+**Last updated:** 2026-03-02 (Phase E complete)
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
@@ -24,13 +24,13 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - RICEFW inventory (list, add, edit, delete, export Excel)
 - Requirements + RICEFW Excel export/import
 - **Feedback & pattern library (Phase D):** feedback_events, pattern_library tables; POST /feedback, GET /feedback, GET /pattern-library; top patterns injected into archaeologist and fit-gap prompts; 30 patterns seeded in migration
-- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library
+- **Sector & benchmarks (Phase E):** clients.sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints table; GET /engagement/{id}/benchmark-hints (derived from client or stored); POST /clients/{id}/benchmark-opt-out
+- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library, benchmark_hints
 
 **RECENT CHANGES:**
-- Generate from Gaps fix: backend validates engagement exists and returns clear 404/500; frontend parses error detail and shows friendly message; RICEFW list accepts data.items or data array.
-- Phase D complete: feedback_events and pattern_library DDL; create_feedback_event, list_feedback_events, get_pattern_library, increment_pattern_use; POST/GET feedback, GET pattern-library; _get_top_patterns_text() injected into archaeologist and fit-gap system prompts; seed 30 patterns in run_migrations; frontend /patterns page.
-- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`; `rapid-fallback-phase-d`. New tag after each phase for rollback.
-- Next: Phase E (sector archetype & benchmarks), then F per REFINED_BACKLOG.md.
+- Phase E complete: client DDL (sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in); benchmark_hints table; GET benchmark-hints (returns stored or derived from client profile); POST clients/{id}/benchmark-opt-out; update_client in database; frontend client form (Sector & benchmarks section), engagement [id] Benchmark insights section with opt-out.
+- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b`; `rapid-fallback-phase-c`; `rapid-fallback-phase-d`; `rapid-fallback-phase-e`. New tag after each phase for rollback.
+- Next: Phase F (Excel Fit-Gap sheet, template download) per REFINED_BACKLOG.md.
 
 ## Architecture decisions
 - scope_items.py in-memory (not Supabase) - avoids timeout

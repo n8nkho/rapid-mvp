@@ -35,6 +35,9 @@ from database import (
     create_client,
     get_client,
     list_clients,
+    update_client,
+    get_benchmark_hints_by_engagement,
+    create_benchmark_hint,
     create_engagement,
     get_engagement,
     list_engagements,
@@ -291,6 +294,11 @@ class ClientCreate(BaseModel):
     senior_executives: Optional[List[Dict[str, str]]] = None  # [{"name": "...", "title": "..."}]
     direct_competitors: Optional[List[str]] = None
     substitutes: Optional[List[str]] = None
+    # Phase E: sector & benchmarks
+    sector_archetype: Optional[str] = None
+    complexity_drivers: Optional[List[str]] = None
+    erp_maturity: Optional[str] = None
+    benchmark_opt_in: Optional[bool] = True
 
 class ClientPrefillFromWebsiteRequest(BaseModel):
     url: str
@@ -761,6 +769,19 @@ def get_single_client(client_id: str):
     if not client:
         raise HTTPException(status_code=404, detail=f"{client_id} not found")
     return client
+
+
+@router.post("/clients/{client_id}/benchmark-opt-out", status_code=200)
+def client_benchmark_opt_out(client_id: str):
+    """Set benchmark_opt_in = false for the client. Used when client opts out of benchmark insights."""
+    client = get_client(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail=f"{client_id} not found")
+    try:
+        updated = update_client(client_id, {"benchmark_opt_in": False})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return updated or client
 
 
 # ── Engagements ───────────────────────────────────────────────────────────────
@@ -1686,6 +1707,58 @@ def get_engagement_summary(engagement_id: str):
         "total_analysed": by_status.get("analysed", 0),
         "gap_results_summary": gap_results_summary,
     }
+
+
+@router.get("/engagement/{engagement_id}/benchmark-hints")
+def get_benchmark_hints(engagement_id: str):
+    """Return benchmark insights for the engagement. If client has benchmark_opt_in=false, returns []. Otherwise returns stored hints or derived from client profile (sector_archetype, erp_maturity, complexity_drivers)."""
+    ctx = get_engagement_with_client(engagement_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    client = ctx.get("client") or {}
+    if client.get("benchmark_opt_in") is False:
+        return {"engagement_id": engagement_id, "hints": [], "opted_out": True}
+    try:
+        stored = get_benchmark_hints_by_engagement(engagement_id)
+    except Exception as e:
+        logger.warning("get_benchmark_hints_by_engagement failed: %s", e)
+        stored = []
+    if stored:
+        return {"engagement_id": engagement_id, "hints": stored, "opted_out": False}
+    # Derive hints from client profile
+    hints = []
+    sector = client.get("sector_archetype") or client.get("industry")
+    if sector:
+        hints.append({
+            "category": "sector",
+            "title": f"Sector: {sector}",
+            "content": f"Your sector archetype is set to {sector}. Use this to tailor scope item relevance and industry best practices in gap analysis.",
+        })
+    erp = client.get("erp_maturity")
+    if erp:
+        hints.append({
+            "category": "erp_maturity",
+            "title": f"ERP maturity: {erp}",
+            "content": f"ERP maturity is {erp}. This can influence fit vs. gap expectations and adoption readiness.",
+        })
+    drivers = client.get("complexity_drivers")
+    if drivers:
+        if isinstance(drivers, list):
+            drivers_str = ", ".join(str(d) for d in drivers[:5])
+        else:
+            drivers_str = str(drivers)
+        hints.append({
+            "category": "complexity",
+            "title": "Complexity drivers",
+            "content": f"Noted complexity drivers: {drivers_str}. Consider these when assessing effort and customisation risk.",
+        })
+    if not hints:
+        hints.append({
+            "category": "general",
+            "title": "Benchmark insights",
+            "content": "Add sector archetype, ERP maturity, or complexity drivers in the client profile to get tailored benchmark hints here.",
+        })
+    return {"engagement_id": engagement_id, "hints": hints, "opted_out": False}
 
 
 @router.get("/engagement/{engagement_id}/hitl-queue")
@@ -3555,6 +3628,22 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS value_proposition text;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS senior_executives jsonb;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS direct_competitors jsonb;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS substitutes jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS sector_archetype text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS complexity_drivers jsonb;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS erp_maturity text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS benchmark_opt_in boolean DEFAULT true;
+"""
+
+_BENCHMARK_HINTS_DDL = """
+CREATE TABLE IF NOT EXISTS benchmark_hints (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id   text NOT NULL,
+  category        text DEFAULT 'general',
+  title           text NOT NULL,
+  content         text NOT NULL,
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_benchmark_hints_engagement ON benchmark_hints (engagement_id);
 """
 
 _ENGAGEMENTS_EXTRA_DDL = """
@@ -3755,6 +3844,7 @@ def run_migrations():
             cur.execute(_FIT_GAP_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.execute(_FEEDBACK_PATTERN_DDL)
+            cur.execute(_BENCHMARK_HINTS_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -3764,18 +3854,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
     }
 
 

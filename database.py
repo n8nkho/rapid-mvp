@@ -242,6 +242,41 @@ def list_clients() -> list:
     return response.data or []
 
 
+def update_client(client_id: str, updates: dict) -> dict:
+    """Update client by client_id. Returns updated row or {}."""
+    response = (
+        supabase.table("clients")
+        .update(updates)
+        .eq("client_id", client_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+# ── Benchmark hints (Phase E) ─────────────────────────────────────────────────
+
+def get_benchmark_hints_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("benchmark_hints")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def create_benchmark_hint(engagement_id: str, category: str, title: str, content: str) -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "category": category or "general",
+        "title": title,
+        "content": content,
+    }
+    response = supabase.table("benchmark_hints").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
 # ── Engagements ───────────────────────────────────────────────────────────────
 
 def _next_engagement_id() -> str:
