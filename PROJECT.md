@@ -10,23 +10,24 @@ Backend: https://rapid-mvp-production.up.railway.app
 Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
-## Current Status (2026-02-28)
-WORKING:
-- POST /requirements - creates REQ-001, REQ-002 per engagement
-- GET /requirements?engagement_id= - lists requirements
-- POST /gap-analysis - semantic match against 244 SAP scope items
-- GET /results?engagement_id= - retrieves past results
-- /capture page - form to capture requirements with tags
-- / page - gap analysis with expandable cards, LOB filter
-- Supabase tables: requirements, gap_results
+## Current Status / Recent Changes
+**Last updated:** 2026-03-02 (Phase B complete)
 
-IN PROGRESS:
-- GET /engagement/{id}/summary
-- POST /engagement/{id}/analyse-all
-- POST /requirements/extract-from-transcript
-- GET /engagement/{id}/process-mirror
-- /engagement page - dashboard
-- Transcript ingestion tab on /capture
+**WORKING:**
+- Requirements CRUD, transcript extract, archaeologist agent
+- Gap analysis (244 scope items), analyse-all
+- HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events
+- **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- Engagement summary, process-mirror, KPI summary
+- Process steps CRUD + extract; workflow BPMN
+- RICEFW inventory (list, add, edit, delete, export Excel)
+- Requirements + RICEFW Excel export/import
+- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments
+
+**RECENT CHANGES:**
+- Phase B complete: fit_gap_assessments DDL in run_migrations; database.py (create/get/update); main.py endpoints (fit-gap-assess idempotent, fit-gap-board, review, fit-gap-analyse-all). Frontend /fitgap (board + process view, Analyse All, review modal).
+- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` (after Phase B). New tag after each phase for rollback.
+- Next: Phase C (RICEFW from approved gaps), then D–F per REFINED_BACKLOG.md.
 
 ## Architecture decisions
 - scope_items.py in-memory (not Supabase) - avoids timeout

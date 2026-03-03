@@ -554,3 +554,69 @@ def delete_ricefw_item(item_id: str, engagement_id: str) -> bool:
         .execute()
     )
     return bool(response.data)
+
+
+# ── Fit/Gap Assessments (Phase B) ───────────────────────────────────────────────
+
+def _next_fga_id(engagement_id: str) -> str:
+    """Generate next FGA-XXX id per engagement."""
+    response = (
+        supabase.table("fit_gap_assessments")
+        .select("assessment_id")
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        aid = row.get("assessment_id") or ""
+        if isinstance(aid, str) and aid.startswith("FGA-"):
+            try:
+                nums.append(int(aid.split("-")[1]))
+            except (IndexError, ValueError):
+                pass
+    return f"FGA-{max(nums, default=0) + 1:03d}"
+
+
+def create_fit_gap_assessment(data: dict) -> dict:
+    """Insert a fit/gap assessment. data must include engagement_id, req_id, fit_type, complexity."""
+    engagement_id = data.get("engagement_id")
+    if not data.get("assessment_id"):
+        data = {**data, "assessment_id": _next_fga_id(engagement_id)}
+    response = supabase.table("fit_gap_assessments").insert(data).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_fit_gap_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("fit_gap_assessments")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("assessment_id")
+        .execute()
+    )
+    return response.data or []
+
+
+def get_fit_gap_by_assessment_id(assessment_id: str, engagement_id: str) -> dict:
+    response = (
+        supabase.table("fit_gap_assessments")
+        .select("*")
+        .eq("assessment_id", assessment_id)
+        .eq("engagement_id", engagement_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def update_fit_gap_assessment(assessment_id: str, engagement_id: str, updates: dict) -> dict:
+    response = (
+        supabase.table("fit_gap_assessments")
+        .update(updates)
+        .eq("assessment_id", assessment_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}

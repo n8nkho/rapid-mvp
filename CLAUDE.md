@@ -82,3 +82,16 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - Commit format: "feat: ...", "fix: ..."
 - Test endpoints with curl after changes
 - **Feature completion (must):** For every feature, confirm Build → Test → Defect clean → Commit → Deploy → Ready to check before done (see `.cursor/rules/feature-completion.mdc`).
+- **After every phase:** Update PROJECT.md and CLAUDE.md with current status / recent changes; create fallback git tag; run E2E tests.
+
+## Fit/Gap (Phase B)
+- **Table:** fit_gap_assessments (assessment_id e.g. FGA-001, req_id, engagement_id, fit_type, complexity, rationale, sap_scope_item_*, workaround_option, customisation_risk, clean_core_impact, estimated_effort_days_low/high, cost_band, confidence_score, hitl_state, reviewed_by, reviewed_at, reviewer_notes, …). Created via POST /admin/migrate or run_migrations().
+- **Endpoints:** POST /v1/requirements/{req_id}/fit-gap-assess?engagement_id=… (idempotent); GET /v1/engagement/{engagement_id}/fit-gap-board; POST /v1/fit-gap-assessments/{assessment_id}/review?engagement_id=… (body: reviewer, notes?, approve, fit_type?, complexity?); POST /v1/engagement/{engagement_id}/fit-gap-analyse-all.
+- **fit_type:** fit_standard | fit_config | fit_extension | gap_ricefw | gap_companion | out_of_scope. Board returns by_fit_type, by_process, summary (total, fit_count, gap_count, ai_draft, approved, effort days, complexity_breakdown).
+
+## Current status / recent changes (for new agents)
+- **PROJECT.md** in this repo has "Current Status / Recent Changes" with working features and last updates.
+- **REFINED_BACKLOG.md** defines phased implementation (Phase A done, **Phase B done**, C = RICEFW from gaps, D = patterns, E = benchmarks, F = Excel polish).
+- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` (after Phase B). New tag after each phase.
+- **HITL:** hitl_state on requirements; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
+- **Fit/Gap:** fit_gap_assessments table and endpoints above. Frontend: /fitgap (board + process view, Analyse All, review).

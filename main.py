@@ -56,6 +56,10 @@ from database import (
     delete_ricefw_item,
     create_hitl_event,
     list_hitl_events,
+    create_fit_gap_assessment,
+    get_fit_gap_by_engagement,
+    get_fit_gap_by_assessment_id,
+    update_fit_gap_assessment,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -434,6 +438,15 @@ class RICEFWUpdate(BaseModel):
     status: Optional[str] = None
     complexity: Optional[str] = None
     priority: Optional[str] = None
+
+
+# Phase B: Fit/Gap
+class FitGapReviewRequest(BaseModel):
+    reviewer: str
+    fit_type: Optional[str] = None
+    complexity: Optional[str] = None
+    notes: Optional[str] = None
+    approve: bool
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -3121,6 +3134,240 @@ def delete_ricefw(engagement_id: str, item_id: UUID):
     return None
 
 
+# ── Fit/Gap Assessments (Phase B) ────────────────────────────────────────────
+
+_FIT_GAP_TYPES = {"fit_standard", "fit_config", "fit_extension", "gap_ricefw", "gap_companion", "out_of_scope"}
+_FIT_GAP_COMPLEXITY = {"XS", "S", "M", "L", "XL"}
+
+_FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA solution architect conducting a Fit-to-Standard workshop assessment.
+Given a business requirement, classify it against SAP S/4HANA Public Cloud capabilities.
+Client context: {context}
+Always return valid JSON with no markdown. Respond only with the JSON object."""
+
+_FIT_GAP_USER_TMPL = """Requirement: {title}
+Description: {description}
+Business process: {business_process}
+Priority: {priority}
+Tags: {tags}
+Category: {category}
+Best matching SAP scope items from initial analysis: {top_matches}
+
+Classify this requirement as one of:
+- fit_standard: works as-is in standard S/4HANA
+- fit_config: achievable through configuration/parameters only
+- fit_extension: achievable via SAP-released extension (BAdI, key-user, BTP side-by-side)
+- gap_ricefw: requires custom RICEFW development
+- gap_companion: requires third-party companion solution
+- out_of_scope: not in scope
+
+Return JSON only:
+{{"fit_type":"fit_standard|fit_config|fit_extension|gap_ricefw|gap_companion|out_of_scope","complexity":"XS|S|M|L|XL","rationale":"2-3 sentence explanation","sap_scope_item_id":null or "ID","sap_scope_item_name":null or "name","workaround_option":null or "text","customisation_risk":null or "Low|Medium|High","clean_core_impact":null or "None|Low|Medium|High","estimated_effort_days_low":0,"estimated_effort_days_high":0,"cost_band":"<5k|5k-20k|20k-100k|>100k","confidence_score":0.8}}"""
+
+
+@router.post("/requirements/{req_id}/fit-gap-assess", status_code=201)
+def fit_gap_assess(req_id: str, engagement_id: str):
+    """Run AI Fit-to-Standard assessment for a requirement. Creates one assessment per req (idempotent: returns existing if present)."""
+    req = get_requirement_by_id(req_id, engagement_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=f"Requirement {req_id} not found for engagement {engagement_id}")
+
+    # Idempotent: if assessment already exists for this req, return it
+    existing = get_fit_gap_by_engagement(engagement_id)
+    for a in existing:
+        if a.get("req_id") == req_id:
+            return a
+
+    ctx = get_engagement_with_client(engagement_id)
+    client = (ctx or {}).get("client") or {}
+    industry = client.get("industry") or "General"
+    employees = client.get("employees") or 0
+    regulatory = client.get("regulatory_environment") or []
+    context = f"Industry: {industry}, {employees} employees, regulatory: {regulatory}"
+
+    gap_records = get_gap_results_by_req_id(req_id, engagement_id)
+    top_matches = []
+    if gap_records:
+        matches = gap_records[0].get("matches") or []
+        for m in matches[:3]:
+            top_matches.append(f"{m.get('id', '')}: {m.get('name', '')}")
+    top_matches_str = "; ".join(top_matches) if top_matches else "None"
+
+    user_prompt = _FIT_GAP_USER_TMPL.format(
+        title=req.get("title", ""),
+        description=req.get("description", ""),
+        business_process=req.get("business_process") or "",
+        priority=req.get("priority") or "",
+        tags=req.get("tags") or [],
+        category=req.get("category") or "",
+        top_matches=top_matches_str,
+    )
+    system_prompt = _FIT_GAP_SYSTEM.format(context=context)
+
+    try:
+        provider = get_provider()
+        result = provider.complete(system_prompt, user_prompt, max_tokens=512, model=MODEL_HAIKU)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
+
+    raw = result.get("content", "{}")
+    json_match = re.search(r"\{[^{}]*\}", raw)
+    if not json_match:
+        raise HTTPException(status_code=500, detail="No JSON in AI response")
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON: {e}")
+
+    fit_type = (data.get("fit_type") or "fit_standard").lower().replace("-", "_")
+    if fit_type not in _FIT_GAP_TYPES:
+        fit_type = "fit_standard"
+    complexity = (data.get("complexity") or "S").upper()
+    if complexity not in _FIT_GAP_COMPLEXITY:
+        complexity = "S"
+
+    record = {
+        "engagement_id": engagement_id,
+        "req_id": req_id,
+        "fit_type": fit_type,
+        "complexity": complexity,
+        "rationale": data.get("rationale"),
+        "sap_scope_item_id": data.get("sap_scope_item_id"),
+        "sap_scope_item_name": data.get("sap_scope_item_name"),
+        "workaround_option": data.get("workaround_option"),
+        "customisation_risk": data.get("customisation_risk"),
+        "clean_core_impact": data.get("clean_core_impact"),
+        "estimated_effort_days_low": data.get("estimated_effort_days_low"),
+        "estimated_effort_days_high": data.get("estimated_effort_days_high"),
+        "cost_band": data.get("cost_band"),
+        "ai_generated": True,
+        "confidence_score": data.get("confidence_score"),
+        "hitl_state": "ai_draft",
+    }
+    assessment = create_fit_gap_assessment(record)
+    if not assessment:
+        raise HTTPException(status_code=500, detail="Failed to create fit/gap assessment")
+    # Attach requirement summary for frontend
+    assessment["requirement_title"] = req.get("title")
+    assessment["requirement_business_process"] = req.get("business_process")
+    return assessment
+
+
+@router.get("/engagement/{engagement_id}/fit-gap-board")
+def get_fit_gap_board(engagement_id: str):
+    """Return fit/gap board: by_fit_type, by_process, summary."""
+    requirements = get_requirements_by_engagement(engagement_id)
+    req_map = {r["req_id"]: r for r in requirements}
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    by_fit_type = {
+        "fit_standard": [],
+        "fit_config": [],
+        "fit_extension": [],
+        "gap_ricefw": [],
+        "gap_companion": [],
+        "out_of_scope": [],
+    }
+    by_process = {}
+    summary = {
+        "total": 0,
+        "fit_count": 0,
+        "gap_count": 0,
+        "ai_draft": 0,
+        "approved": 0,
+        "total_effort_days_low": 0,
+        "total_effort_days_high": 0,
+        "complexity_breakdown": {"XS": 0, "S": 0, "M": 0, "L": 0, "XL": 0},
+    }
+    fit_types_set = {"fit_standard", "fit_config", "fit_extension"}
+
+    for a in assessments:
+        summary["total"] += 1
+        state = (a.get("hitl_state") or "ai_draft").lower()
+        if state == "ai_draft":
+            summary["ai_draft"] += 1
+        elif state == "approved":
+            summary["approved"] += 1
+        ft = (a.get("fit_type") or "fit_standard").lower()
+        if ft in fit_types_set:
+            summary["fit_count"] += 1
+        else:
+            summary["gap_count"] += 1
+        summary["total_effort_days_low"] += a.get("estimated_effort_days_low") or 0
+        summary["total_effort_days_high"] += a.get("estimated_effort_days_high") or 0
+        c = (a.get("complexity") or "S").upper()
+        if c in summary["complexity_breakdown"]:
+            summary["complexity_breakdown"][c] += 1
+
+        req = req_map.get(a["req_id"]) or {}
+        a_with_req = {**a, "requirement_title": req.get("title"), "requirement_business_process": req.get("business_process")}
+        bucket = by_fit_type.get(ft) or by_fit_type.get("out_of_scope")
+        if bucket is not None:
+            bucket.append(a_with_req)
+
+        bp = req.get("business_process") or "Unclassified"
+        by_process.setdefault(bp, {})
+        by_process[bp][ft] = by_process[bp].get(ft, 0) + 1
+
+    return {
+        "engagement_id": engagement_id,
+        "by_fit_type": by_fit_type,
+        "by_process": by_process,
+        "summary": summary,
+    }
+
+
+@router.post("/fit-gap-assessments/{assessment_id}/review")
+def review_fit_gap_assessment(assessment_id: str, engagement_id: str, body: FitGapReviewRequest):
+    """Approve or send back a fit/gap assessment. assessment_id is e.g. FGA-001."""
+    fga = get_fit_gap_by_assessment_id(assessment_id, engagement_id)
+    if not fga:
+        raise HTTPException(status_code=404, detail="Fit/gap assessment not found")
+
+    if body.approve:
+        updates = {
+            "hitl_state": "approved",
+            "reviewed_by": body.reviewer,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            "reviewer_notes": body.notes,
+        }
+    else:
+        updates = {"hitl_state": "ai_draft", "reviewer_notes": body.notes}
+        if body.fit_type:
+            updates["fit_type"] = body.fit_type.lower()
+        if body.complexity:
+            updates["complexity"] = body.complexity.upper()
+
+    updated = update_fit_gap_assessment(assessment_id, engagement_id, updates)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Update failed")
+    req = get_requirement_by_id(updated["req_id"], engagement_id)
+    updated["requirement_title"] = req.get("title") if req else None
+    updated["requirement_business_process"] = req.get("business_process") if req else None
+    return updated
+
+
+@router.post("/engagement/{engagement_id}/fit-gap-analyse-all", status_code=200)
+def fit_gap_analyse_all(engagement_id: str):
+    """Run fit-gap assessment for all requirements that do not yet have an assessment. 200ms delay between calls."""
+    import time
+    requirements = get_requirements_by_engagement(engagement_id)
+    existing = get_fit_gap_by_engagement(engagement_id)
+    req_ids_done = {a["req_id"] for a in existing}
+    created = 0
+    for req in requirements:
+        if req["req_id"] in req_ids_done:
+            continue
+        state = (req.get("hitl_state") or "ai_draft").lower()
+        if state == "out_of_scope":
+            continue
+        try:
+            fit_gap_assess(req["req_id"], engagement_id)
+            created += 1
+            time.sleep(0.2)
+        except Exception as e:
+            logger.warning("Fit-gap assess failed for %s: %s", req["req_id"], e)
+    return {"engagement_id": engagement_id, "processed": created}
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
@@ -3224,6 +3471,39 @@ CREATE POLICY "public read hitl_events" ON hitl_events FOR SELECT USING (true);
 CREATE POLICY "public insert hitl_events" ON hitl_events FOR INSERT WITH CHECK (true);
 """
 
+_FIT_GAP_DDL = """
+CREATE TABLE IF NOT EXISTS fit_gap_assessments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  assessment_id TEXT NOT NULL UNIQUE,
+  req_id TEXT NOT NULL,
+  engagement_id TEXT NOT NULL,
+  fit_type TEXT NOT NULL,
+  complexity TEXT NOT NULL,
+  sap_scope_item_id TEXT,
+  sap_scope_item_name TEXT,
+  rationale TEXT,
+  workaround_option TEXT,
+  customisation_risk TEXT,
+  clean_core_impact TEXT,
+  estimated_effort_days_low INT,
+  estimated_effort_days_high INT,
+  cost_band TEXT,
+  ai_generated BOOLEAN DEFAULT true,
+  confidence_score FLOAT,
+  hitl_state TEXT DEFAULT 'ai_draft',
+  reviewed_by TEXT,
+  reviewed_at TIMESTAMPTZ,
+  reviewer_notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fit_gap_engagement ON fit_gap_assessments (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_fit_gap_req ON fit_gap_assessments (req_id, engagement_id);
+ALTER TABLE fit_gap_assessments ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public read fga" ON fit_gap_assessments FOR SELECT USING (true);
+CREATE POLICY "public insert fga" ON fit_gap_assessments FOR INSERT WITH CHECK (true);
+CREATE POLICY "public update fga" ON fit_gap_assessments FOR UPDATE USING (true);
+"""
+
 # Reference table: user, role, engagement_id — for verifying access and future restriction
 _USER_ENGAGEMENT_ACCESS_DDL = """
 CREATE TABLE IF NOT EXISTS user_engagement_access (
@@ -3282,21 +3562,22 @@ def run_migrations():
             cur.execute(_ENGAGEMENTS_EXTRA_DDL)
             cur.execute(_REQUIREMENTS_EXTRA_DDL)
             cur.execute(_HITL_DDL)
+            cur.execute(_FIT_GAP_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients columns, engagements columns, requirements columns, HITL tables, and user_engagement_access ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL).strip(),
     }
 
 
