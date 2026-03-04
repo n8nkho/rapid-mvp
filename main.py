@@ -3332,12 +3332,24 @@ def delete_ricefw(engagement_id: str, item_id: UUID):
 _FIT_GAP_TYPES = {"fit_standard", "fit_config", "fit_extension", "gap_ricefw", "gap_companion", "out_of_scope"}
 _FIT_GAP_COMPLEXITY = {"XS", "S", "M", "L", "XL"}
 
-_FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA solution architect conducting a Fit-to-Standard workshop assessment.
-Given a business requirement, classify it against SAP S/4HANA Public Cloud capabilities.
-Client context: {context}
-Always return valid JSON with no markdown. Respond only with the JSON object."""
+_FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA Public Cloud solution architect conducting a Fit-to-Standard assessment.
+Be realistic and conservative. Standard S/4HANA Public Cloud does NOT natively support:
+- EV-specific or battery-specific manufacturing processes
+- Charging infrastructure management
+- Vehicle homologation and type approval
+- Telematics and connected vehicle data integration
+- Battery state-of-health tracking
+- Carbon/emissions regulatory reporting beyond basic CO2
+- Complex configure-to-order for highly engineered products
+- MES-level shop floor control for niche manufacturing
+These should be classified as gap_ricefw or gap_companion, NOT fit_standard.
+Only classify as fit_standard if the requirement maps directly to a documented S/4HANA Public Cloud standard scope item with no modification.
+Always return valid JSON only, no markdown.
+Client context: {context}"""
 
-_FIT_GAP_USER_TMPL = """Requirement: {title}
+_FIT_GAP_USER_TMPL = """If the requirement describes something niche, industry-specific, or not covered by standard SAP scope items, you MUST classify it as gap_ricefw or gap_companion. Do not default to fit_standard when uncertain — use gap_ricefw instead.
+
+Requirement: {title}
 Description: {description}
 Business process: {business_process}
 Priority: {priority}
