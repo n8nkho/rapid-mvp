@@ -11,13 +11,15 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-02 (Phase F complete)
+**Last updated:** 2026-03-04 (Agent team, simulation, Railway repo connected)
+
+**Checkpoint tag:** `rapid-checkpoint-2026-03-04` — use this to resume or for a new agent.
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
 - Gap analysis (244 scope items), analyse-all
 - HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events
-- **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- **Fit/Gap:** fit_gap_assessments table (create in Supabase if missing — see Open errors); POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
 - **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate (from approved gap_ricefw assessments → ricefw_inventory)
 - Engagement summary, process-mirror, KPI summary
 - Process steps CRUD + extract; workflow BPMN
@@ -25,12 +27,22 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - Requirements + RICEFW Excel export/import; **Phase F:** requirements export includes optional second sheet "Fit-Gap" when fit_gap_assessments exist; GET /requirements/template/download (RTM template)
 - **Feedback & pattern library (Phase D):** feedback_events, pattern_library tables; POST /feedback, GET /feedback, GET /pattern-library; top patterns injected into archaeologist and fit-gap prompts; 30 patterns seeded in migration
 - **Sector & benchmarks (Phase E):** clients.sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints table; GET /engagement/{id}/benchmark-hints (derived from client or stored); POST /clients/{id}/benchmark-opt-out
-- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library, benchmark_hints
+- **Agent Team & Simulation:** agent_roles, agent_knowledge, agent_maturity_scores, platform_issues tables; GET /agent-roles, POST /simulate/agent-response, POST/GET/PATCH /platform-issues, GET /engagement/{id}/platform-backlog. Simulation script: `scripts/run_zero_ev_simulation.py` (Zero EV Motors client/engagement, ~87 requirements). Railway connected to GitHub n8nkho/rapid-mvp; platform-issues returns 200.
+- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments (create if missing), feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues
+
+**OPEN ERRORS TO FIX:**
+- None (fit_gap_assessments and ANTHROPIC_API_KEY fixed; simulation runs: 87 requirements, 87 fit-gap assessed, gaps populated).
+
+**NEXT IMPROVEMENTS TO CONTINUE:**
+1. **Frontend (rapid-ui):** implement Agent Simulation page and Platform Backlog per **docs/FRONTEND_AGENT_BACKLOG_SPEC.md** (GET /agent-roles, POST /simulate/agent-response, GET/POST /platform-issues, GET /engagement/{id}/platform-backlog).
+2. Optional: manual browser test per docs/READY_FOR_BROWSER_CHECK.md; verify latest engagement (e.g. ENG-016) in UI — requirements, fit-gap board, platform backlog.
+3. Further simulation/agent: maturity scoring UI, Phase 2 deliverables (lessons learned export, backlog prioritisation).
 
 **RECENT CHANGES:**
-- Phase F complete: requirements export adds second sheet "Fit-Gap" when fit_gap_assessments exist (assessment_id, req_id, fit_type, complexity, rationale, effort, cost_band, hitl_state, etc.); GET /requirements/template/download returns RAPID_requirements_template.xlsx (sheet RTM, header row for RTM import); frontend "Download template" button on engagement page next to Download Excel.
-- Fallback tag: `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-f`. New tag after each phase for rollback.
-- REFINED_BACKLOG Phases A–F complete.
+- 2026-03-04: Errors fixed; simulation ENG-016: 87 requirements, 87 fit-gap assessed, 9 gaps. Stricter fit-gap prompt (niche/EV → gap_ricefw or gap_companion). Simulation script: parallel fit-gap-assess (6 workers) for faster run. Next phase: frontend Agent Simulation + Platform Backlog.
+- 2026-03-04: Agent team + platform-issues APIs; Railway connected to n8nkho/rapid-mvp; checkpoint tag: rapid-checkpoint-2026-03-04.
+- Phase F complete: requirements export second sheet "Fit-Gap"; GET /requirements/template/download; frontend "Download template".
+- Fallback tag: `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
 
 ## Architecture decisions
 - scope_items.py in-memory (not Supabase) - avoids timeout
@@ -47,9 +59,10 @@ Run Claude Code: cd ~/Documents/rapid-mvp && claude
 Test backend: curl https://rapid-mvp-production.up.railway.app/health
 
 ## How to continue with any AI
-1. Share this PROJECT.md and both CLAUDE.md files
-2. Say: Continue building RAPID - read PROJECT.md first
-3. The AI has full context to continue any feature
+1. Share PROJECT.md and CLAUDE.md (this repo).
+2. **Short prompt:** `Continue RAPID` or `RAPID checkpoint`
+3. New agent should: read PROJECT.md (Open errors + Next improvements), then CLAUDE.md; fix open errors first, then pick next improvements.
+4. Checkpoint tag to resume from: `rapid-checkpoint-2026-03-04`.
 
 
 ## Feature Backlog (prioritised sprints)

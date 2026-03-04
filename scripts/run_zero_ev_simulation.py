@@ -12,7 +12,12 @@ import os
 import sys
 import json
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import httpx
+
+# Max concurrent fit-gap-assess calls (LLM); keep modest to avoid rate limits
+FIT_GAP_WORKERS = 6
 
 API_URL = os.getenv("API_URL", "http://localhost:8000/v1").rstrip("/")
 API_KEY = os.getenv("API_KEY")
@@ -171,19 +176,27 @@ def main():
             print(f"Requirement create failed: {e}")
     print(f"Created {created_reqs} requirements")
 
-    # 4) Run fit-gap on a subset to get gaps (20-30 gap assessments)
+    # 4) Run fit-gap on all requirements (parallel for speed; sequential would be 87 * ~2s)
+    def _assess_one(rid: str):
+        try:
+            out = post(f"/requirements/{rid}/fit-gap-assess?engagement_id={engagement_id}")
+            return (True, (out.get("fit_type") or "").startswith("gap"))
+        except Exception as e:
+            return (False, e)
+
     assessed = 0
     gap_count = 0
     first_fit_gap_error = None
-    for req_id in req_ids[:50]:  # assess first 50
-        try:
-            out = post(f"/requirements/{req_id}/fit-gap-assess?engagement_id={engagement_id}")
-            assessed += 1
-            if (out.get("fit_type") or "").startswith("gap"):
-                gap_count += 1
-        except Exception as e:
-            if first_fit_gap_error is None:
-                first_fit_gap_error = e
+    with ThreadPoolExecutor(max_workers=FIT_GAP_WORKERS) as ex:
+        futures = {ex.submit(_assess_one, rid): rid for rid in req_ids}
+        for fut in as_completed(futures):
+            ok, val = fut.result()
+            if ok:
+                assessed += 1
+                if val:
+                    gap_count += 1
+            elif first_fit_gap_error is None:
+                first_fit_gap_error = val
     if first_fit_gap_error is not None and assessed == 0:
         print(f"Fit-gap note: all assess calls failed; first error: {first_fit_gap_error}")
     print(f"Fit-gap assessed: {assessed}; gap-type assessments: {gap_count}")

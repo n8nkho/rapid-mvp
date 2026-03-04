@@ -104,14 +104,18 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **database.py:** update_client(client_id, updates), get_benchmark_hints_by_engagement(engagement_id), create_benchmark_hint(...).
 
 ## Current status / recent changes (for new agents)
-- **PROJECT.md** in this repo has "Current Status / Recent Changes" with working features and last updates.
-- **REFINED_BACKLOG.md** defines phased implementation (Phase A–**F** done).
-- **Fallback tag:** `rapid-fallback-2026-03-02` (baseline); `rapid-fallback-phase-b` through `rapid-fallback-phase-f`. New tag after each phase.
-- **HITL:** hitl_state on requirements; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
-- **Fit/Gap:** fit_gap_assessments table and endpoints above. Frontend: /fitgap (board + process view, Analyse All, review).
-- **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement RICEFW section (#ricefw). Engagement existence checked (404 if missing).
-- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; top patterns injected; frontend /patterns.
-- **Phase E:** client sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints; GET benchmark-hints, POST benchmark-opt-out; frontend client form "Sector & benchmarks", engagement [id] "Benchmark insights" + opt-out.
+- **Checkpoint tag:** `rapid-checkpoint-2026-03-04`. Resume with prompt: **Continue RAPID** or **RAPID checkpoint**; read PROJECT.md first (Open errors + Next improvements).
+- **PROJECT.md** has "Current Status / Recent Changes", "Open errors to fix", and "Next improvements to continue".
+- **Open errors:** None (fit_gap_assessments + ANTHROPIC fixed; simulation: 87 reqs, 87 fit-gap, gaps populated).
+- **Next:** Frontend (rapid-ui) Agent Simulation + Platform Backlog per docs/FRONTEND_AGENT_BACKLOG_SPEC.md; optional browser test per READY_FOR_BROWSER_CHECK.md.
+- **REFINED_BACKLOG.md** defines phased implementation (Phase A–F done).
+- **Fallback tag:** `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
+- **HITL:** hitl_state; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
+- **Fit/Gap:** fit_gap_assessments table + endpoints; create table in Supabase if missing. Frontend: /fitgap.
+- **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement #ricefw.
+- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; patterns injected.
+- **Phase E:** sector_archetype, benchmark_hints; GET benchmark-hints, POST benchmark-opt-out.
+- **Agent Team:** agent_roles, platform_issues, etc.; GET /agent-roles, POST /simulate/agent-response, POST/GET /platform-issues, GET /engagement/{id}/platform-backlog. Railway connected to n8nkho/rapid-mvp.
 
 ## Excel export polish (Phase F)
 - **Requirements export:** GET /v1/engagement/{engagement_id}/requirements/export — first sheet "Requirements" (unchanged). When fit_gap_assessments exist for the engagement, second sheet "Fit-Gap" is added (assessment_id, req_id, fit_type, complexity, rationale, sap_scope_item_*, effort days, cost_band, confidence_score, hitl_state, reviewed_by, reviewer_notes).
