@@ -598,7 +598,6 @@ def _next_fga_id(engagement_id: str) -> str:
     response = (
         supabase.table("fit_gap_assessments")
         .select("assessment_id")
-        .eq("engagement_id", engagement_id)
         .execute()
     )
     existing = response.data or []
