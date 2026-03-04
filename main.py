@@ -3332,10 +3332,21 @@ def delete_ricefw(engagement_id: str, item_id: UUID):
 _FIT_GAP_TYPES = {"fit_standard", "fit_config", "fit_extension", "gap_ricefw", "gap_companion", "out_of_scope"}
 _FIT_GAP_COMPLEXITY = {"XS", "S", "M", "L", "XL"}
 
-_FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA solution architect conducting a Fit-to-Standard workshop assessment.
-Given a business requirement, classify it against SAP S/4HANA Public Cloud capabilities.
+_FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA Public Cloud solution architect conducting a Fit-to-Standard assessment.
 Client context: {context}
-Always return valid JSON with no markdown. Respond only with the JSON object."""
+Be realistic and strict. Standard S/4HANA Public Cloud does NOT natively support:
+- EV-specific or battery-specific manufacturing (battery BOM, state-of-health, cell balancing)
+- Charging infrastructure management
+- Vehicle homologation and type approval workflows
+- Telematics and connected vehicle data integration
+- Carbon/emissions regulatory reporting beyond basic CO2 tracking
+- Highly engineered configure-to-order for niche products
+- MES-level shop floor control for specialist manufacturing
+- Any requirement that is highly industry-specific with no matching standard scope item
+These MUST be classified as gap_ricefw or gap_companion.
+Only use fit_standard if the requirement maps directly to a documented S/4HANA Public Cloud standard scope item with zero modification.
+When uncertain between fit_standard and gap_ricefw, choose gap_ricefw.
+Always return valid JSON only. No markdown. No explanation outside the JSON object."""
 
 _FIT_GAP_USER_TMPL = """Requirement: {title}
 Description: {description}
