@@ -67,6 +67,14 @@ from database import (
     list_feedback_events,
     get_pattern_library,
     increment_pattern_use,
+    list_agent_roles,
+    get_agent_role_by_role_id,
+    get_agent_knowledge_by_role,
+    create_agent_maturity_score,
+    get_agent_maturity_scores,
+    create_platform_issue,
+    list_platform_issues,
+    update_platform_issue,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -466,6 +474,37 @@ class FitGapReviewRequest(BaseModel):
     complexity: Optional[str] = None
     notes: Optional[str] = None
     approve: bool
+
+
+# Agent Team & Simulation
+class SimulateAgentRequest(BaseModel):
+    engagement_id: str
+    agent_role_id: str
+    phase: Optional[str] = None
+    context_message: Optional[str] = None
+    conversation_turn: Optional[List[Dict[str, str]]] = None
+
+
+class PlatformIssueCreate(BaseModel):
+    engagement_id: str
+    agent_role_id: Optional[str] = None
+    phase: Optional[str] = "requirements"
+    context: Optional[Dict[str, Any]] = None
+    problem_description: str
+    issue_type: Optional[str] = "missing_feature"
+    suggested_improvement: Optional[str] = None
+    priority: Optional[str] = "medium"
+
+
+class PlatformIssueUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class MaturityScoreCreate(BaseModel):
+    criterion: str  # domain_knowledge | reasoning_quality | authenticity | collaboration
+    score: int  # 1-5
+    notes: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -3641,6 +3680,163 @@ def get_pattern_library_endpoint(limit: int = 50):
     return {"items": items, "total": len(items)}
 
 
+# ── Agent Team & Simulation ───────────────────────────────────────────────────
+
+@router.get("/agent-roles")
+def get_agent_roles():
+    """List configured agent roles for simulation and UI dropdown."""
+    try:
+        roles = list_agent_roles()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"items": roles, "total": len(roles)}
+
+
+@router.get("/agent-roles/{role_id}/maturity")
+def get_agent_maturity(role_id: str):
+    """Return latest maturity scores per criterion for the role."""
+    try:
+        scores = get_agent_maturity_scores(role_id=role_id, limit=50)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    # Return latest per criterion
+    by_criterion = {}
+    for s in scores:
+        c = s.get("criterion") or ""
+        if c and c not in by_criterion:
+            by_criterion[c] = s
+    return {"role_id": role_id, "scores": list(by_criterion.values())}
+
+
+@router.post("/agent-roles/{role_id}/maturity", status_code=201)
+def post_agent_maturity(role_id: str, body: MaturityScoreCreate):
+    """Record a maturity assessment for the role (criterion, score 1-5, notes)."""
+    role = get_agent_role_by_role_id(role_id)
+    if not role:
+        raise HTTPException(status_code=404, detail=f"Agent role {role_id} not found")
+    score = max(1, min(5, body.score))
+    try:
+        record = create_agent_maturity_score(role_id, body.criterion, score, body.notes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return record
+
+
+@router.post("/simulate/agent-response")
+def simulate_agent_response(body: SimulateAgentRequest):
+    """Get a single agent reply: load role + knowledge, build system prompt, call LLM, return reply. Injects pattern library."""
+    role = get_agent_role_by_role_id(body.agent_role_id)
+    if not role:
+        raise HTTPException(status_code=404, detail=f"Agent role {body.agent_role_id} not found")
+    knowledge = get_agent_knowledge_by_role(body.agent_role_id, limit=20)
+    focus_areas = role.get("focus_areas") or []
+    if isinstance(focus_areas, str):
+        try:
+            focus_areas = json.loads(focus_areas) if focus_areas else []
+        except Exception:
+            focus_areas = []
+    system_parts = [
+        f"You are: {role.get('name', '')}",
+        f"Mandate: {role.get('mandate', '')}",
+        f"Focus areas: {', '.join(focus_areas) if focus_areas else 'N/A'}",
+        f"Behavior: {role.get('behavior_rules', '')}",
+        f"Escalation: {role.get('escalation_rules', '')}",
+    ]
+    if knowledge:
+        system_parts.append("Domain knowledge (use to ground your response):")
+        for k in knowledge:
+            system_parts.append(f"- [{k.get('category', '')}] { (k.get('content') or '')[:400] }")
+    system_prompt = "\n".join(system_parts)
+    patterns = _get_top_patterns_text(limit=5)
+    if patterns:
+        system_prompt = system_prompt + "\n\n" + patterns
+    phase = body.phase or "requirements"
+    system_prompt += f"\n\nCurrent simulation phase: {phase}. Respond in character; be concise and actionable."
+    user_lines = []
+    if body.conversation_turn:
+        for msg in body.conversation_turn:
+            user_lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')}")
+    if body.context_message:
+        user_lines.append(body.context_message)
+    if not user_lines:
+        user_lines.append("What should we focus on next for this phase?")
+    user_prompt = "\n".join(user_lines)
+    try:
+        provider = get_provider()
+        result = provider.complete(system_prompt, user_prompt, max_tokens=600, model=MODEL_HAIKU)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
+    content = (result.get("content") or "").strip()
+    return {"agent_role_id": body.agent_role_id, "phase": phase, "reply": content}
+
+
+@router.post("/platform-issues", status_code=201)
+def post_platform_issue(body: PlatformIssueCreate):
+    """Create a platform issue (e.g. from simulation when an agent hits a limitation)."""
+    try:
+        record = create_platform_issue({
+            "engagement_id": body.engagement_id,
+            "agent_role_id": body.agent_role_id,
+            "phase": body.phase or "requirements",
+            "context": body.context or {},
+            "problem_description": body.problem_description,
+            "issue_type": (body.issue_type or "missing_feature").lower().replace(" ", "_"),
+            "suggested_improvement": body.suggested_improvement or "",
+            "priority": (body.priority or "medium").lower(),
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return record
+
+
+@router.get("/platform-issues")
+def get_platform_issues(
+    engagement_id: Optional[str] = None,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+):
+    """List platform issues with optional filters."""
+    try:
+        items = list_platform_issues(engagement_id=engagement_id, priority=priority, status=status, limit=min(limit, 200))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"items": items, "total": len(items)}
+
+
+@router.patch("/platform-issues/{issue_id}")
+def patch_platform_issue(issue_id: str, body: PlatformIssueUpdate):
+    """Update platform issue status or priority."""
+    updates = {}
+    if body.status is not None:
+        updates["status"] = body.status
+    if body.priority is not None:
+        updates["priority"] = body.priority
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    try:
+        record = update_platform_issue(issue_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return record
+
+
+@router.get("/engagement/{engagement_id}/platform-backlog")
+def get_engagement_platform_backlog(engagement_id: str):
+    """Return platform issues for the engagement grouped by priority (high, medium, low)."""
+    try:
+        items = list_platform_issues(engagement_id=engagement_id, limit=500)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    by_priority = {"high": [], "medium": [], "low": []}
+    for i in items:
+        p = (i.get("priority") or "medium").lower()
+        if p not in by_priority:
+            by_priority[p] = []
+        by_priority[p].append(i)
+    return {"engagement_id": engagement_id, "by_priority": by_priority, "total": len(items)}
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
@@ -3832,6 +4028,99 @@ CREATE TABLE IF NOT EXISTS pattern_library (
 CREATE INDEX IF NOT EXISTS idx_pattern_use_count ON pattern_library (use_count DESC);
 """
 
+# Agent team & simulation (Phase 1 / Phase 2)
+_AGENT_ROLES_DDL = """
+CREATE TABLE IF NOT EXISTS agent_roles (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_id         text NOT NULL UNIQUE,
+  name            text NOT NULL,
+  mandate         text NOT NULL,
+  focus_areas     jsonb DEFAULT '[]',
+  behavior_rules  text DEFAULT '',
+  escalation_rules text DEFAULT '',
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_roles_role_id ON agent_roles (role_id);
+
+CREATE TABLE IF NOT EXISTS agent_knowledge (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_id         text NOT NULL,
+  category        text DEFAULT 'general',
+  content         text NOT NULL,
+  source          text DEFAULT '',
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_knowledge_role ON agent_knowledge (role_id);
+
+CREATE TABLE IF NOT EXISTS agent_maturity_scores (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_id         text NOT NULL,
+  criterion       text NOT NULL,
+  score           int NOT NULL CHECK (score >= 1 AND score <= 5),
+  assessed_at     timestamptz DEFAULT now(),
+  notes           text DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_maturity_role ON agent_maturity_scores (role_id);
+
+CREATE TABLE IF NOT EXISTS platform_issues (
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id         text NOT NULL,
+  agent_role_id         text,
+  phase                 text DEFAULT 'requirements',
+  context                jsonb DEFAULT '{}',
+  problem_description   text NOT NULL,
+  issue_type            text DEFAULT 'missing_feature',
+  suggested_improvement  text DEFAULT '',
+  priority              text DEFAULT 'medium',
+  status                text DEFAULT 'open',
+  created_at            timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_platform_issues_engagement ON platform_issues (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_platform_issues_priority ON platform_issues (priority);
+"""
+
+_AGENT_ROLES_SEED = [
+    ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
+     ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
+     "Frame recommendations clearly; prefer standard over custom; reference scope items when possible. If unsure, ask another agent or flag for human review.",
+     "Escalate to human when scope or fit-type is ambiguous or high-risk."),
+    ("ba", "Business Analyst (RTM & Traceability)", "Act as a BA focused on structure and documentation. Own requirements catalog, RTM, process hierarchies, and documentation standards.",
+     ["Requirements catalog", "RTM", "Process hierarchies", "Documentation standards", "Process → requirement → test case links"],
+     "Normalize requirements into a consistent template. Maintain coverage across in-scope processes. Speak with clarity and traceability.",
+     "If coverage is incomplete or mapping unclear, flag for human or Lead Consultant."),
+    ("manufacturing_sme", "Manufacturing Operations SME (Client-Side)", "Emulate a Production/Operations Manager at a Zero-like EV manufacturer. Focus on shop floor reality: BOMs, routings, work centers, production orders, quality, rework, scrap, scheduling, maintenance.",
+     ["BOMs", "Routings", "Work centers", "Production orders", "Quality checks", "Rework and scrap", "Scheduling", "Maintenance"],
+     "Provide realistic as-is descriptions and pain points. Validate whether proposed future processes are practical. Speak from operational experience.",
+     "Escalate when process or system constraint is outside your experience."),
+    ("supply_chain_sme", "Supply Chain & Logistics SME", "Act as Supply Chain / Logistics Director. Focus on demand planning, inventory optimization, warehouse operations, outbound logistics, 3PLs.",
+     ["Demand planning", "Inventory optimization", "Warehouse operations", "Outbound logistics", "3PLs", "Lead times", "Fill rates", "OTIF"],
+     "Express real concerns around lead times, fill rates, OTIF, capacity. Validate P2P and O2C from a supply chain view.",
+     "Flag when integration or system boundary is unclear."),
+    ("finance_sme", "Finance & Controlling SME", "Act as Plant Controller / Group Controller. Focus on costing, profitability, revenue recognition, period close, management reporting.",
+     ["Costing", "Profitability", "Revenue recognition", "Period close", "Management reporting", "Multi-currency", "Multi-GAAP"],
+     "Provide realistic financial requirements and constraints. Assess reporting and analytics needs.",
+     "Escalate for complex accounting or regulatory interpretation."),
+    ("it_architect", "IT/Integration Architect", "Act as internal IT architect. Focus on system landscape, integrations (PLM, MES, CRM, bank, tax), data migration, security.",
+     ["System landscape", "Integrations", "PLM", "MES", "CRM", "Data migration", "Security"],
+     "Define integration requirements, non-functional needs, and technical feasibility. Be clear on boundaries.",
+     "Escalate when security or compliance boundary is unclear."),
+    ("change_ux", "Change Management / UX Agent", "Act as Change Lead. Focus on user adoption, training, UX simplification, process ownership.",
+     ["User adoption", "Training", "UX simplification", "Process ownership", "Change risks"],
+     "Identify change risks and training requirements. Advocate for usability.",
+     "Flag when change impact is high or ownership unclear."),
+]
+
+_AGENT_KNOWLEDGE_SEED = [
+    ("lead_consultant", "erp_best_practice", "Discrete manufacturing ERP: E2O, MTO, MTS flows; multi-plant and multi-country are common. Prefer fit-to-standard; Clean Core means key-user/BTP over on-stack customisation.", "manufacturing_erp"),
+    ("lead_consultant", "cloud_constraints", "SAP S/4HANA Public Cloud: Clean Core, extensibility via BTP/key-user; scope items drive standard capability. Configuration over code.", "sap_cloud"),
+    ("ba", "rtm_governance", "RTM links process → requirement → test case. Requirements should have clear title, description, business value, priority, process mapping, source. Normalize to a single template per engagement.", "governance"),
+    ("manufacturing_sme", "shop_floor", "EV manufacturing: battery lead times drive planning; rework and quality gates are critical; work centers and routings vary by product line. Engineering changes impact BOM and capacity.", "zero_like"),
+    ("supply_chain_sme", "supply_chain", "Long-lead components (e.g. batteries), VMI, 3PLs, OTIF and fill rates matter. P2P and O2C must reflect real lead times and lot sizing.", "zero_like"),
+    ("finance_sme", "finance", "Multi-currency, multi-GAAP, period close speed (e.g. 8-day close as pain point). Revenue recognition and costing for EV/manufacturing.", "zero_like"),
+    ("it_architect", "integration", "Integrations: PLM (engineering), MES (shop floor), CRM, bank, tax engines. Data migration and security boundaries must be explicit.", "technical"),
+    ("change_ux", "change", "User adoption and training needs scale with process change. Identify process owners and high-change areas early.", "change_mgmt"),
+]
+
 # Seed patterns for Phase D (business/process discovery and fit-gap)
 _PATTERN_SEED = [
     ("Probe workarounds", "discovery", "Ask what people do when the system blocks them or is slow; document workarounds and shadow tools."),
@@ -3912,6 +4201,7 @@ def run_migrations():
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.execute(_FEEDBACK_PATTERN_DDL)
             cur.execute(_BENCHMARK_HINTS_DDL)
+            cur.execute(_AGENT_ROLES_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -3919,20 +4209,33 @@ def run_migrations():
                         "INSERT INTO pattern_library (name, category, content) VALUES (%s, %s, %s)",
                         (name, category, content),
                     )
+            cur.execute("SELECT COUNT(*) FROM agent_roles")
+            if cur.fetchone()[0] == 0:
+                for role_id, name, mandate, focus_areas, behavior_rules, escalation_rules in _AGENT_ROLES_SEED:
+                    cur.execute(
+                        """INSERT INTO agent_roles (role_id, name, mandate, focus_areas, behavior_rules, escalation_rules)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (role_id, name, mandate, json.dumps(focus_areas), behavior_rules, escalation_rules),
+                    )
+                for role_id, category, content, source in _AGENT_KNOWLEDGE_SEED:
+                    cur.execute(
+                        "INSERT INTO agent_knowledge (role_id, category, content, source) VALUES (%s, %s, %s, %s)",
+                        (role_id, category, content, source),
+                    )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL).strip(),
     }
 
 

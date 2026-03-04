@@ -449,3 +449,95 @@ class TestSignOff:
                 json={"level": "invalid", "signed_by": "Jane"},
             )
         assert resp.status_code == 400
+
+
+# ── Agent Team & Simulation ──────────────────────────────────────────────────
+
+class TestAgentRoles:
+    def test_get_agent_roles_returns_list(self, client_live):
+        with patch("main.list_agent_roles", return_value=[{"role_id": "lead_consultant", "name": "Lead Consultant"}]):
+            resp = client_live.get(f"{API_PREFIX}/agent-roles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "items" in data
+        assert data["total"] == 1
+        assert data["items"][0]["role_id"] == "lead_consultant"
+
+    def test_get_agent_maturity_returns_scores(self, client_live):
+        with patch("main.get_agent_maturity_scores", return_value=[{"criterion": "domain_knowledge", "score": 4}]):
+            resp = client_live.get(f"{API_PREFIX}/agent-roles/lead_consultant/maturity")
+        assert resp.status_code == 200
+        assert resp.json()["role_id"] == "lead_consultant"
+        assert "scores" in resp.json()
+
+    def test_post_agent_maturity_creates_score(self, client_live):
+        with (
+            patch("main.get_agent_role_by_role_id", return_value={"role_id": "lead_consultant"}),
+            patch("main.create_agent_maturity_score", return_value={"id": "m1", "role_id": "lead_consultant", "criterion": "reasoning_quality", "score": 4}),
+        ):
+            resp = client_live.post(
+                f"{API_PREFIX}/agent-roles/lead_consultant/maturity",
+                json={"criterion": "reasoning_quality", "score": 4},
+            )
+        assert resp.status_code == 201
+        assert resp.json()["score"] == 4
+
+    def test_post_agent_maturity_404_unknown_role(self, client_live):
+        with patch("main.get_agent_role_by_role_id", return_value=None):
+            resp = client_live.post(
+                f"{API_PREFIX}/agent-roles/unknown_role/maturity",
+                json={"criterion": "domain_knowledge", "score": 3},
+            )
+        assert resp.status_code == 404
+
+
+class TestPlatformIssues:
+    def test_post_platform_issue_creates(self, client_live):
+        with patch("main.create_platform_issue", return_value={"id": "pi-1", "engagement_id": ENGAGEMENT, "problem_description": "Missing field", "priority": "high"}):
+            resp = client_live.post(
+                f"{API_PREFIX}/platform-issues",
+                json={"engagement_id": ENGAGEMENT, "problem_description": "Missing field", "priority": "high"},
+            )
+        assert resp.status_code == 201
+        assert resp.json()["problem_description"] == "Missing field"
+
+    def test_get_platform_issues_filtered(self, client_live):
+        with patch("main.list_platform_issues", return_value=[{"id": "pi-1", "engagement_id": ENGAGEMENT}]):
+            resp = client_live.get(f"{API_PREFIX}/platform-issues?engagement_id={ENGAGEMENT}")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+
+    def test_get_engagement_platform_backlog(self, client_live):
+        with patch("main.list_platform_issues", return_value=[{"id": "pi-1", "priority": "high"}]):
+            resp = client_live.get(f"{API_PREFIX}/engagement/{ENGAGEMENT}/platform-backlog")
+        assert resp.status_code == 200
+        assert resp.json()["engagement_id"] == ENGAGEMENT
+        assert "by_priority" in resp.json()
+
+
+class TestSimulateAgentResponse:
+    def test_simulate_agent_response_returns_reply(self, client_live):
+        role = {"role_id": "lead_consultant", "name": "Lead Consultant", "mandate": "Guide fit/gap", "focus_areas": [], "behavior_rules": "", "escalation_rules": ""}
+        mock_provider = MagicMock()
+        mock_provider.complete.return_value = {"content": "I recommend fit-to-standard first."}
+        with (
+            patch("main.get_agent_role_by_role_id", return_value=role),
+            patch("main.get_agent_knowledge_by_role", return_value=[]),
+            patch("main.get_provider", return_value=mock_provider),
+            patch("main._get_top_patterns_text", return_value=""),
+        ):
+            resp = client_live.post(
+                f"{API_PREFIX}/simulate/agent-response",
+                json={"engagement_id": ENGAGEMENT, "agent_role_id": "lead_consultant", "context_message": "What should we do for BOM?"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["agent_role_id"] == "lead_consultant"
+        assert "reply" in resp.json()
+
+    def test_simulate_agent_response_404_unknown_role(self, client_live):
+        with patch("main.get_agent_role_by_role_id", return_value=None):
+            resp = client_live.post(
+                f"{API_PREFIX}/simulate/agent-response",
+                json={"engagement_id": ENGAGEMENT, "agent_role_id": "unknown", "context_message": "Hi"},
+            )
+        assert resp.status_code == 404

@@ -698,3 +698,68 @@ def increment_pattern_use(pattern_id: str) -> None:
         supabase.table("pattern_library").update({"use_count": current + 1}).eq("id", pattern_id).execute()
     except Exception:
         pass
+
+
+# ── Agent Team & Simulation ─────────────────────────────────────────────────
+
+def list_agent_roles() -> list:
+    response = supabase.table("agent_roles").select("*").order("role_id").execute()
+    return response.data or []
+
+
+def get_agent_role_by_role_id(role_id: str) -> dict:
+    response = supabase.table("agent_roles").select("*").eq("role_id", role_id).limit(1).execute()
+    data = response.data or []
+    return data[0] if data else None
+
+
+def get_agent_knowledge_by_role(role_id: str = None, limit: int = 50) -> list:
+    query = supabase.table("agent_knowledge").select("*").order("category").limit(limit)
+    if role_id:
+        query = query.eq("role_id", role_id)
+    return query.execute().data or []
+
+
+def create_agent_maturity_score(role_id: str, criterion: str, score: int, notes: str = None) -> dict:
+    record = {"role_id": role_id, "criterion": criterion, "score": max(1, min(5, score)), "notes": notes or ""}
+    response = supabase.table("agent_maturity_scores").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_agent_maturity_scores(role_id: str = None, limit: int = 100) -> list:
+    query = supabase.table("agent_maturity_scores").select("*").order("assessed_at", desc=True).limit(limit)
+    if role_id:
+        query = query.eq("role_id", role_id)
+    return query.execute().data or []
+
+
+def create_platform_issue(data: dict) -> dict:
+    record = {
+        "engagement_id": data.get("engagement_id", ""),
+        "agent_role_id": data.get("agent_role_id"),
+        "phase": data.get("phase", "requirements"),
+        "context": data.get("context", {}),
+        "problem_description": data.get("problem_description", ""),
+        "issue_type": data.get("issue_type", "missing_feature"),
+        "suggested_improvement": data.get("suggested_improvement", ""),
+        "priority": data.get("priority", "medium"),
+        "status": data.get("status", "open"),
+    }
+    response = supabase.table("platform_issues").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def list_platform_issues(engagement_id: str = None, priority: str = None, status: str = None, limit: int = 200) -> list:
+    query = supabase.table("platform_issues").select("*").order("created_at", desc=True).limit(limit)
+    if engagement_id:
+        query = query.eq("engagement_id", engagement_id)
+    if priority:
+        query = query.eq("priority", priority)
+    if status:
+        query = query.eq("status", status)
+    return query.execute().data or []
+
+
+def update_platform_issue(issue_id: str, updates: dict) -> dict:
+    response = supabase.table("platform_issues").update(updates).eq("id", issue_id).execute()
+    return response.data[0] if response.data else {}
