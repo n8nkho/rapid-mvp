@@ -6,7 +6,10 @@ Uses RAPID API; set API_URL and optionally API_KEY.
 
 Usage:
   python scripts/run_zero_ev_simulation.py [--dry-run]
-  API_URL=http://localhost:8000/v1 API_KEY=xxx python scripts/run_zero_ev_simulation.py
+  # Local (no auth):
+  API_URL=http://localhost:8000/v1 python scripts/run_zero_ev_simulation.py
+  # Production (set API_KEY if backend requires it):
+  API_URL=https://rapid-mvp-production.up.railway.app/v1 API_KEY=xxx python scripts/run_zero_ev_simulation.py
 """
 import os
 import sys
@@ -91,6 +94,9 @@ REQ_SEED_EXTENDED = REQ_SEED + EXTRA_REQS[:55]  # ~100 total
 def get(path: str) -> dict:
     with httpx.Client(timeout=30.0) as c:
         r = c.get(API_URL + path, headers=HEADERS)
+    if r.status_code == 401:
+        print("401 Unauthorized. If your backend requires an API key, set API_KEY and re-run:")
+        print("  API_URL=https://your-api/v1 API_KEY=your_key python3 scripts/run_zero_ev_simulation.py")
     r.raise_for_status()
     return r.json()
 
@@ -143,8 +149,8 @@ def main():
         print(f"Created client: {ZERO_CLIENT_NAME} ({client_id})")
 
     # 2) Resolve or create engagement
-    # /v1/engagements returns {"items": [...]}; link via engagement_id and client_id.
-    engagements = get("/engagements").get("items") or []
+    # /v1/engagements returns {"engagements": [...]}; link via engagement_id and client_id.
+    engagements = get("/engagements").get("engagements") or get("/engagements").get("items") or []
     engagement_id = None
     for e in engagements:
         if e.get("client_id") == client_id and (e.get("name") or "").strip() == ZERO_ENGAGEMENT_NAME:
