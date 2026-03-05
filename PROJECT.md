@@ -11,7 +11,7 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-04 (Agent team, simulation, Railway repo connected)
+**Last updated:** 2026-03-04 (Audit trail, post-deploy, next phase)
 
 **Checkpoint tag:** `rapid-checkpoint-2026-03-04` — use this to resume or for a new agent.
 
@@ -19,28 +19,29 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - Requirements CRUD, transcript extract, archaeologist agent
 - Gap analysis (244 scope items), analyse-all
 - HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events
-- **Fit/Gap:** fit_gap_assessments table (create in Supabase if missing — see Open errors); POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
 - **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate (from approved gap_ricefw assessments → ricefw_inventory)
 - Engagement summary, process-mirror, KPI summary
 - Process steps CRUD + extract; workflow BPMN
 - RICEFW inventory (list, add, edit, delete, export Excel)
-- Requirements + RICEFW Excel export/import; **Phase F:** requirements export includes optional second sheet "Fit-Gap" when fit_gap_assessments exist; GET /requirements/template/download (RTM template)
-- **Feedback & pattern library (Phase D):** feedback_events, pattern_library tables; POST /feedback, GET /feedback, GET /pattern-library; top patterns injected into archaeologist and fit-gap prompts; 30 patterns seeded in migration
-- **Sector & benchmarks (Phase E):** clients.sector_archetype, complexity_drivers, erp_maturity, benchmark_opt_in; benchmark_hints table; GET /engagement/{id}/benchmark-hints (derived from client or stored); POST /clients/{id}/benchmark-opt-out
-- **Agent Team & Simulation:** agent_roles, agent_knowledge, agent_maturity_scores, platform_issues tables; GET /agent-roles, POST /simulate/agent-response, POST/GET/PATCH /platform-issues, GET /engagement/{id}/platform-backlog. Simulation script: `scripts/run_zero_ev_simulation.py` (Zero EV Motors client/engagement, ~87 requirements). Railway connected to GitHub n8nkho/rapid-mvp; platform-issues returns 200.
-- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments (create if missing), feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues
+- Requirements + RICEFW Excel export/import; **Phase F:** requirements export includes optional second sheet "Fit-Gap"; GET /requirements/template/download (RTM template)
+- **Feedback & pattern library (Phase D):** feedback_events, pattern_library; POST /feedback, GET /feedback, GET /pattern-library; 30 patterns seeded
+- **Sector & benchmarks (Phase E):** benchmark_hints; GET /engagement/{id}/benchmark-hints; POST /clients/{id}/benchmark-opt-out
+- **Agent Team & Simulation:** agent_roles, platform_issues; GET /agent-roles, POST /simulate/agent-response, POST/GET/PATCH /platform-issues, GET /engagement/{id}/platform-backlog. Simulation script: `scripts/run_zero_ev_simulation.py`.
+- **Audit (agentic era):** audit_events table; GET /engagement/{id}/audit-trail (merged HITL + audit); audit logging on simulate + platform-issues (X-Actor-Id, X-Actor-Role). Post-deploy: `ADMIN_API_KEY=xxx ./scripts/post_deploy.sh` (migrate + smoke checks); manual SQL in Supabase if DATABASE_URL not set.
+- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, **audit_events**
 
 **OPEN ERRORS TO FIX:**
-- None (fit_gap_assessments and ANTHROPIC_API_KEY fixed; simulation runs: 87 requirements, 87 fit-gap assessed, gaps populated).
+- None.
 
 **NEXT IMPROVEMENTS TO CONTINUE:**
-1. **Frontend (rapid-ui):** implement Agent Simulation page and Platform Backlog per **docs/FRONTEND_AGENT_BACKLOG_SPEC.md** (GET /agent-roles, POST /simulate/agent-response, GET/POST /platform-issues, GET /engagement/{id}/platform-backlog).
-2. Optional: manual browser test per docs/READY_FOR_BROWSER_CHECK.md; verify latest engagement (e.g. ENG-016) in UI — requirements, fit-gap board, platform backlog.
-3. Further simulation/agent: maturity scoring UI, Phase 2 deliverables (lessons learned export, backlog prioritisation).
+1. **Frontend (rapid-ui):** implement per **docs/FRONTEND_AGENT_BACKLOG_SPEC.md**: Agent Simulation page, Platform Backlog, **Audit Trail** (GET /engagement/{id}/audit-trail; send X-Actor-Id / X-Actor-Role on simulate and platform-issues). See **docs/AGENTIC_ERA_UI_DESIGN.md** for HITL and compliance UX.
+2. Optional: manual browser test per docs/READY_FOR_BROWSER_CHECK.md (engagement ENG-016: requirements, fit-gap, platform backlog).
+3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
-- 2026-03-04: Errors fixed; simulation ENG-016: 87 requirements, 87 fit-gap assessed, 9 gaps. Stricter fit-gap prompt (niche/EV → gap_ricefw or gap_companion). Simulation script: parallel fit-gap-assess (6 workers) for faster run. Next phase: frontend Agent Simulation + Platform Backlog.
-- 2026-03-04: Agent team + platform-issues APIs; Railway connected to n8nkho/rapid-mvp; checkpoint tag: rapid-checkpoint-2026-03-04.
+- 2026-03-04: Audit trail API, audit_events in migrate, post_deploy.sh (migrate + smoke checks; handle manual_required). Frontend spec updated with audit-trail and actor headers.
+- 2026-03-04: Agent team, platform-issues, simulation; Railway connected; checkpoint rapid-checkpoint-2026-03-04.
 - Phase F complete: requirements export second sheet "Fit-Gap"; GET /requirements/template/download; frontend "Download template".
 - Fallback tag: `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
 

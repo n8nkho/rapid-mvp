@@ -109,7 +109,7 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **Checkpoint tag:** `rapid-checkpoint-2026-03-04`. Resume with prompt: **Continue RAPID** or **RAPID checkpoint**; read PROJECT.md first (Open errors + Next improvements).
 - **PROJECT.md** has "Current Status / Recent Changes", "Open errors to fix", and "Next improvements to continue".
 - **Open errors:** None (fit_gap_assessments + ANTHROPIC fixed; simulation: 87 reqs, 87 fit-gap, gaps populated).
-- **Next:** Frontend (rapid-ui) Agent Simulation + Platform Backlog per docs/FRONTEND_AGENT_BACKLOG_SPEC.md; optional browser test per READY_FOR_BROWSER_CHECK.md.
+- **Next:** See docs/NEXT_PHASE.md. Frontend (rapid-ui): Agent Simulation, Platform Backlog, Audit Trail per docs/FRONTEND_AGENT_BACKLOG_SPEC.md; optional browser test per READY_FOR_BROWSER_CHECK.md.
 - **REFINED_BACKLOG.md** defines phased implementation (Phase A–F done).
 - **Fallback tag:** `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
 - **HITL:** hitl_state; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.

@@ -6,7 +6,7 @@ Use this spec to implement the Agent Team and Platform Backlog UI in the rapid-u
 
 - **GET /v1/agent-roles**  
   Returns `{ items: Array<{ role_id, name, mandate, focus_areas, behavior_rules, escalation_rules }>, total }`.
-- **Use:** Dropdown or list to pick an agent role for “Talk to an agent” or simulation.
+- **Use:** Dropdown or list to pick an agent role for "Talk to an agent" or simulation.
 
 ## 2. Agent conversation (simulate)
 
@@ -14,12 +14,13 @@ Use this spec to implement the Agent Team and Platform Backlog UI in the rapid-u
   Body: `{ engagement_id, agent_role_id, phase?, context_message?, conversation_turn? }`.  
   Returns `{ agent_role_id, phase, reply }`.
 - **UI:**  
-  - Page or section: “Agent simulation” or “Talk to an agent”.  
+  - Page or section: "Agent simulation" or "Talk to an agent".  
   - Select engagement (from URL or dropdown), select agent role (from GET agent-roles).  
   - Optional: phase selector (pre_engagement | current_state | requirements | fit_gap).  
-  - Text input for “Your message” (context_message).  
+  - Text input for "Your message" (context_message).  
   - Optional: show conversation_turn history and append assistant reply.  
   - On submit, call POST simulate/agent-response; display `reply` in the UI.
+- **Headers:** Send **X-Actor-Id** and **X-Actor-Role** (e.g. consultant, business_user) for audit.
 
 ## 3. Agent maturity (optional)
 
@@ -27,7 +28,7 @@ Use this spec to implement the Agent Team and Platform Backlog UI in the rapid-u
   Returns `{ role_id, scores: Array<{ criterion, score, assessed_at, notes }> }`.
 - **POST /v1/agent-roles/{role_id}/maturity**  
   Body: `{ criterion, score (1–5), notes? }`.  
-  Use for admin or “Assess maturity” flow.
+  Use for admin or "Assess maturity" flow.
 
 ## 4. Platform issues / backlog
 
@@ -41,16 +42,24 @@ Use this spec to implement the Agent Team and Platform Backlog UI in the rapid-u
 - **GET /v1/engagement/{engagement_id}/platform-backlog**  
   Returns `{ engagement_id, by_priority: { high: [], medium: [], low: [] }, total }`.
 - **UI:**  
-  - New page `/platform-backlog` or tab on engagement “Platform issues”.  
+  - New page `/platform-backlog` or tab on engagement "Platform issues".  
   - List issues; filter by priority (high/medium/low) and status.  
   - Show: problem_description, suggested_improvement, issue_type, priority, status.  
   - Optional: form to create issue (engagement_id, problem_description, priority, suggested_improvement).
+- **Headers:** Send **X-Actor-Id** and **X-Actor-Role** on POST/PATCH for audit.
 
-## 5. Navigation
+## 5. Audit trail (compliance / agentic era)
 
-- Add “Agent simulation” (or “Simulate”) and “Platform backlog” to header/nav, with engagement context where needed.
+- **GET /v1/engagement/{engagement_id}/audit-trail?limit=100**  
+  Returns `{ engagement_id, events: Array<{ _source: "hitl"|"audit", action, created_at, actor_id?, actor_role?, ... }>, total }`. Merged HITL + audit_events, sorted by created_at desc.
+- **UI:** Engagement tab or page "Audit trail" / "Activity log": list events, optional filter by `_source` or action; optional export (CSV/JSON).
 
-## 6. API base and auth
+## 6. Navigation
+
+- Add "Agent simulation" (or "Simulate") and "Platform backlog" to header/nav, with engagement context where needed.
+- Add "Audit trail" (or "Activity") on engagement view when implementing compliance.
+
+## 7. API base and auth
 
 - Base URL: same as rest of app (e.g. `process.env.NEXT_PUBLIC_API_URL` ending in `/v1`).  
 - Send `X-API-Key` or `Authorization: Bearer <key>` if the backend requires it.
