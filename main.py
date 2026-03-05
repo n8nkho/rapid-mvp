@@ -75,6 +75,7 @@ from database import (
     create_platform_issue,
     list_platform_issues,
     update_platform_issue,
+    list_audit_events_by_engagement,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -1858,6 +1859,26 @@ def get_hitl_events(engagement_id: str):
         "engagement_id": engagement_id,
         "events": events,
     }
+
+
+@router.get("/engagement/{engagement_id}/audit-trail", tags=["audit"])
+def engagement_audit_trail(engagement_id: str, limit: int = 100):
+    """Unified audit trail: HITL events + audit_events sorted by created_at desc."""
+    try:
+        hitl = list_hitl_events(engagement_id)
+        audit = list_audit_events_by_engagement(engagement_id, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    for h in hitl:
+        h["_source"] = "hitl"
+        h["_sort_at"] = h.get("created_at") or ""
+    for a in audit:
+        a["_source"] = "audit"
+        a["_sort_at"] = a.get("created_at") or ""
+    combined = sorted(hitl + audit, key=lambda x: x.get("_sort_at", ""), reverse=True)
+    for x in combined:
+        x.pop("_sort_at", None)
+    return {"engagement_id": engagement_id, "events": combined[:limit], "total": len(combined)}
 
 
 # ── Analyse All ───────────────────────────────────────────────────────────────
