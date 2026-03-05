@@ -82,6 +82,8 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - Commit format: "feat: ...", "fix: ..."
 - Test endpoints with curl after changes
 - **Feature completion (must):** For every feature, confirm Build → Test → Defect clean → Commit → Deploy → Ready to check before done (see `.cursor/rules/feature-completion.mdc`).
+- **Deploy tracking:** After pushing, track deployment (e.g. Railway) and pause until deploy succeeds before running post-deploy steps; no need to ask user permission.
+- **Post-deploy:** Run `ADMIN_API_KEY=<key> ./scripts/post_deploy.sh` to run migrations (ensures `audit_events` etc.) and smoke checks (health, audit-trail). Script is idempotent.
 - **After every phase:** Update PROJECT.md and CLAUDE.md with current status / recent changes; create fallback git tag; run E2E tests.
 
 ## Fit/Gap (Phase B)

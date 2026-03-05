@@ -7,19 +7,21 @@
 ### Backend (rapid-mvp)
 
 1. **Tables (run migration once)**  
-   - `agent_roles`, `agent_knowledge`, `agent_maturity_scores`, `platform_issues`  
-   - Created and seeded (7 agent roles + knowledge) when you run **POST /v1/admin/migrate** with header `X-Admin-Key: <ADMIN_API_KEY>`.  
+   - `agent_roles`, `agent_knowledge`, `agent_maturity_scores`, `platform_issues`, **audit_events**  
+   - Created and seeded when you run **POST /v1/admin/migrate** with header `X-Admin-Key: <ADMIN_API_KEY>`, or run **`ADMIN_API_KEY=<key> ./scripts/post_deploy.sh`** (migrate + smoke checks).  
    - If migrate returns `manual_required`, run the returned `sql` in Supabase SQL Editor (then seed agent roles manually or call a one-off seed if added).
 
 2. **Endpoints**  
    - **GET /v1/agent-roles** — list agent roles  
    - **GET /v1/agent-roles/{role_id}/maturity** — maturity scores for role  
    - **POST /v1/agent-roles/{role_id}/maturity** — record maturity (criterion, score 1–5, notes)  
-   - **POST /v1/simulate/agent-response** — get agent reply (body: engagement_id, agent_role_id, phase?, context_message?, conversation_turn?)  
-   - **POST /v1/platform-issues** — create platform issue  
+   - **POST /v1/simulate/agent-response** — get agent reply (body: engagement_id, agent_role_id, phase?, context_message?, conversation_turn?); optional headers **X-Actor-Id**, **X-Actor-Role**; logs audit event.  
+   - **POST /v1/platform-issues** — create platform issue (optional X-Actor-Id, X-Actor-Role); logs audit event.  
+   - **PATCH /v1/platform-issues/{id}** — update status/priority (optional engagement_id query, X-Actor-* headers); logs audit event.  
    - **GET /v1/platform-issues** — list (optional: engagement_id, priority, status)  
-   - **PATCH /v1/platform-issues/{id}** — update status/priority  
    - **GET /v1/engagement/{engagement_id}/platform-backlog** — issues grouped by priority  
+   - **GET /v1/engagement/{engagement_id}/audit-trail** — unified HITL + audit_events (compliance).  
+   - **POST /v1/admin/migrate** — creates/updates tables including **audit_events** (run once per deploy if needed; header **X-Admin-Key: &lt;ADMIN_API_KEY&gt;**).  
 
 3. **Simulation script**  
    - `python3 scripts/run_zero_ev_simulation.py`  
