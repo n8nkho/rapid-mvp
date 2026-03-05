@@ -5,7 +5,9 @@ Use this to create **Zero EV Motors** client and engagement with synthetic requi
 ## Prerequisites
 
 - Backend deployed and reachable (e.g. Railway production or local).
-- If the backend requires API key auth: have `API_KEY` (or `ADMIN_API_KEY` / the key your backend expects) ready.
+- If the backend requires API key auth:
+  - Have the same key set when running the script: `API_KEY=xxx`.
+  - **Frontend (Vercel):** set **`NEXT_PUBLIC_API_KEY`** in the project environment to that same value and redeploy. Otherwise the UI will get 401 and show empty clients/engagements.
 - Migrations applied (`POST /v1/admin/migrate` or `./scripts/post_deploy.sh`), so tables `agent_roles`, `platform_issues`, `audit_events`, `fit_gap_assessments`, etc. exist.
 
 ## 1. Run the simulation script
