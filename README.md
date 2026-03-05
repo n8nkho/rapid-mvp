@@ -61,3 +61,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR: install deps, run `
 - **CLAUDE.md** — Context for AI and developers (models, endpoints, conventions).
 - **PROJECT.md** — Product and scope notes.
 - Commit format: `feat: ...`, `fix: ...`. Run tests and fix defects before committing.
+# force redeploy Wed Mar  4 19:23:33 EST 2026
