@@ -40,6 +40,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
+- 2026-03-04: Fallback tag `rapid-fallback-pre-zero-ev-2026-03-04`. Zero EV simulation script fix (GET /engagements → engagements key); 401 hint; **docs/SEED_ZERO_EV_FOR_BROWSER_CHECK.md** for seeding Zero EV and browser-check URLs.
 - 2026-03-04: Audit trail API, audit_events in migrate, post_deploy.sh (migrate + smoke checks; handle manual_required). Frontend spec updated with audit-trail and actor headers.
 - 2026-03-04: Agent team, platform-issues, simulation; Railway connected; checkpoint rapid-checkpoint-2026-03-04.
 - Phase F complete: requirements export second sheet "Fit-Gap"; GET /requirements/template/download; frontend "Download template".
