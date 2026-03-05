@@ -42,6 +42,7 @@ from database import (
     get_engagement,
     list_engagements,
     get_engagement_with_client,
+    update_engagement,
     create_asset,
     get_assets_by_engagement,
     get_assets_by_requirement,
@@ -77,6 +78,7 @@ from database import (
     update_platform_issue,
     create_audit_event,
     list_audit_events_by_engagement,
+    retain_only_engagement,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -812,6 +814,46 @@ def get_single_client(client_id: str):
     return client
 
 
+class ClientUpdate(BaseModel):
+    """Fields that can be updated on a client (all optional)."""
+    name: Optional[str] = None
+    industry: Optional[str] = None
+    employees: Optional[int] = None
+    legal_entities: Optional[int] = None
+    current_systems: Optional[List[str]] = None
+    systems_to_keep: Optional[List[str]] = None
+    systems_to_replace: Optional[List[str]] = None
+    countries: Optional[List[str]] = None
+    regulatory_environment: Optional[List[str]] = None
+    business_strategy: Optional[str] = None
+    goals: Optional[List[str]] = None
+    key_products: Optional[List[str]] = None
+    value_proposition: Optional[str] = None
+    senior_executives: Optional[List[Dict[str, str]]] = None
+    direct_competitors: Optional[List[str]] = None
+    substitutes: Optional[List[str]] = None
+    sector_archetype: Optional[str] = None
+    complexity_drivers: Optional[List[str]] = None
+    erp_maturity: Optional[str] = None
+    benchmark_opt_in: Optional[bool] = None
+
+
+@router.patch("/clients/{client_id}")
+def patch_client(client_id: str, body: ClientUpdate):
+    """Update client fields. Used for auto-save and editing."""
+    client = get_client(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail=f"{client_id} not found")
+    updates = body.dict(exclude_none=True)
+    if not updates:
+        return client
+    try:
+        updated = update_client(client_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return updated or client
+
+
 @router.post("/clients/{client_id}/benchmark-opt-out", status_code=200)
 def client_benchmark_opt_out(client_id: str):
     """Set benchmark_opt_in = false for the client. Used when client opts out of benchmark insights."""
@@ -863,6 +905,46 @@ def get_single_engagement(engagement_id: str):
     if not eng:
         raise HTTPException(status_code=404, detail=f"{engagement_id} not found")
     return eng
+
+
+class EngagementUpdate(BaseModel):
+    """Fields that can be updated on an engagement (all optional)."""
+    client_id: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    go_live_date: Optional[str] = None
+    project_type: Optional[str] = None
+    status: Optional[str] = None
+    planned_start_date: Optional[str] = None
+    planned_end_date: Optional[str] = None
+    actual_start_date: Optional[str] = None
+    actual_end_date: Optional[str] = None
+    project_manager: Optional[str] = None
+    sponsor: Optional[str] = None
+    risk_level: Optional[str] = None
+    health: Optional[str] = None
+
+
+@router.patch("/engagements/{engagement_id}")
+def patch_engagement(engagement_id: str, body: EngagementUpdate):
+    """Update engagement fields. Used for auto-save and editing."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"{engagement_id} not found")
+    updates = body.dict(exclude_none=True)
+    if updates.get("status") and updates["status"] not in {"open", "completed", "abandoned"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    if updates.get("risk_level") and updates["risk_level"] not in {"low", "medium", "high"}:
+        raise HTTPException(status_code=400, detail="Invalid risk_level")
+    if updates.get("health") and updates["health"] not in {"on_track", "at_risk", "off_track"}:
+        raise HTTPException(status_code=400, detail="Invalid health")
+    if not updates:
+        return get_engagement_with_client(engagement_id)
+    try:
+        update_engagement(engagement_id, updates)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return get_engagement_with_client(engagement_id)
 
 
 @router.get("/engagement/{engagement_id}/label")
@@ -2954,6 +3036,104 @@ def download_requirements_template():
     )
 
 
+@router.get("/clients/template/download")
+def download_clients_template():
+    """Return an Excel template for client data. Fill and re-upload or use for reference."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Client"
+    headers = [
+        "name",
+        "industry",
+        "employees",
+        "legal_entities",
+        "current_systems",
+        "systems_to_keep",
+        "systems_to_replace",
+        "countries",
+        "regulatory_environment",
+        "business_strategy",
+        "goals",
+        "key_products",
+        "value_proposition",
+        "senior_executives",
+        "direct_competitors",
+        "substitutes",
+        "sector_archetype",
+        "complexity_drivers",
+        "erp_maturity",
+        "benchmark_opt_in",
+    ]
+    ws.append(headers)
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="RAPID_client_template.xlsx"'},
+    )
+
+
+@router.get("/engagements/template/download")
+def download_engagements_template():
+    """Return an Excel template for engagement data. client_id required when creating."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Engagement"
+    headers = [
+        "client_id",
+        "name",
+        "description",
+        "go_live_date",
+        "project_type",
+        "status",
+        "planned_start_date",
+        "planned_end_date",
+        "actual_start_date",
+        "actual_end_date",
+        "project_manager",
+        "sponsor",
+        "risk_level",
+        "health",
+    ]
+    ws.append(headers)
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="RAPID_engagement_template.xlsx"'},
+    )
+
+
+@router.get("/ricefw/template/download")
+def download_ricefw_template():
+    """Return an Excel template for RICEFW inventory. Type: R|I|C|E|F|W; status: identified|approved|in_development|delivered|cancelled."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RICEFW"
+    headers = [
+        "type",
+        "name",
+        "description",
+        "req_id",
+        "status",
+        "complexity",
+        "priority",
+    ]
+    ws.append(headers)
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="RAPID_ricefw_template.xlsx"'},
+    )
+
+
 def _normalize_header_cell(c: Any) -> str:
     if c is None:
         return ""
@@ -4198,6 +4378,22 @@ _AGENT_ROLES_SEED = [
      "Flag when change impact is high or ownership unclear."),
 ]
 
+# Project team agents: Business and Consulting personas (names prefixed with A_)
+_AGENT_ROLES_SEED_A = [
+    ("a_process_owner", "A_Process_Owner", "Business process owner. Owns process design and sign-off from the business side.",
+     ["Process design", "Sign-off", "Business acceptance"], "Represent business; validate requirements and RICEFW.", "Escalate when scope or priority is unclear."),
+    ("a_finance_lead", "A_Finance_Lead", "Finance lead from the client. Focus on costing, reporting, and period close.",
+     ["Costing", "Reporting", "Period close", "Compliance"], "Provide finance requirements; validate reporting and controls.", "Escalate for regulatory or accounting ambiguity."),
+    ("a_supply_chain_lead", "A_Supply_Chain_Lead", "Supply chain and logistics lead. Focus on planning, inventory, and logistics.",
+     ["Planning", "Inventory", "Logistics", "3PL"], "Define supply chain requirements; validate lead times and OTIF.", "Escalate when integration or boundary is unclear."),
+    ("a_it_lead", "A_IT_Lead", "IT lead from the client. Focus on landscape, integrations, and security.",
+     ["Landscape", "Integrations", "Security", "Data"], "Define technical and integration requirements.", "Escalate for security or compliance boundaries."),
+    ("a_consulting_lead", "A_Consulting_Lead", "Lead consultant from the delivery team. Drives scope and fit/gap.",
+     ["Scope", "Fit/gap", "Clean core", "S/4HANA"], "Guide solution design; prefer standard over custom.", "Escalate for scope or risk decisions."),
+    ("a_change_manager", "A_Change_Manager", "Change and adoption lead. Focus on training and user adoption.",
+     ["Training", "Adoption", "Communication", "Stakeholders"], "Identify change risks and training needs.", "Escalate when change impact is high."),
+]
+
 _AGENT_KNOWLEDGE_SEED = [
     ("lead_consultant", "erp_best_practice", "Discrete manufacturing ERP: E2O, MTO, MTS flows; multi-plant and multi-country are common. Prefer fit-to-standard; Clean Core means key-user/BTP over on-stack customisation.", "manufacturing_erp"),
     ("lead_consultant", "cloud_constraints", "SAP S/4HANA Public Cloud: Clean Core, extensibility via BTP/key-user; scope items drive standard capability. Configuration over code.", "sap_cloud"),
@@ -4266,6 +4462,16 @@ def _require_admin_key(x_admin_key: Optional[str] = Header(None, alias="X-Admin-
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+class RetainEngagementRequest(BaseModel):
+    engagement_id: str
+
+
+@router.post("/admin/retain-engagement", status_code=200, dependencies=[Depends(_require_admin_key)])
+def admin_retain_engagement(body: RetainEngagementRequest):
+    """Remove all clients and engagements except the given one (e.g. ENG-016). Destructive."""
+    return retain_only_engagement(body.engagement_id)
+
+
 @router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])
 def run_migrations():
     """Create required tables if they don't exist.
@@ -4301,6 +4507,14 @@ def run_migrations():
             cur.execute("SELECT COUNT(*) FROM agent_roles")
             if cur.fetchone()[0] == 0:
                 for role_id, name, mandate, focus_areas, behavior_rules, escalation_rules in _AGENT_ROLES_SEED:
+                    cur.execute(
+                        """INSERT INTO agent_roles (role_id, name, mandate, focus_areas, behavior_rules, escalation_rules)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (role_id, name, mandate, json.dumps(focus_areas), behavior_rules, escalation_rules),
+                    )
+            for role_id, name, mandate, focus_areas, behavior_rules, escalation_rules in _AGENT_ROLES_SEED_A:
+                cur.execute("SELECT 1 FROM agent_roles WHERE role_id = %s", (role_id,))
+                if not cur.fetchone():
                     cur.execute(
                         """INSERT INTO agent_roles (role_id, name, mandate, focus_areas, behavior_rules, escalation_rules)
                            VALUES (%s, %s, %s, %s, %s, %s)""",

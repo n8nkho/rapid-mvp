@@ -322,6 +322,42 @@ def list_engagements(client_id: str = None) -> list:
     return query.execute().data or []
 
 
+def update_engagement(engagement_id: str, updates: dict) -> dict:
+    """Update engagement by engagement_id. Returns updated row or {}."""
+    updates = {k: v for k, v in updates.items() if v is not None}
+    if not updates:
+        return get_engagement(engagement_id) or {}
+    response = (
+        supabase.table("engagements")
+        .update(updates)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def delete_engagement(engagement_id: str) -> bool:
+    """Delete a single engagement. Returns True if deleted."""
+    response = (
+        supabase.table("engagements")
+        .delete()
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def delete_client(client_id: str) -> bool:
+    """Delete a single client. Fails if engagements still reference it (FK)."""
+    response = (
+        supabase.table("clients")
+        .delete()
+        .eq("client_id", client_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
 def get_engagement_with_client(engagement_id: str) -> dict:
     """Return engagement dict merged with its client as a 'client' key."""
     eng = get_engagement(engagement_id)
@@ -790,3 +826,68 @@ def list_audit_events_by_engagement(engagement_id: str, limit: int = 200) -> lis
         .execute()
     )
     return response.data or []
+
+
+def retain_only_engagement(engagement_id: str) -> dict:
+    """Remove all data for clients/engagements other than the given engagement.
+    engagement_id is normalized (e.g. ENG016 -> ENG-016). Returns counts deleted or error."""
+    # Normalize: ENG016 -> ENG-016
+    raw = (engagement_id or "").strip().upper()
+    if raw.startswith("ENG"):
+        num = raw.replace("ENG", "").replace("-", "").strip()
+        try:
+            target = f"ENG-{int(num):03d}" if num else raw
+        except ValueError:
+            target = raw
+    else:
+        target = raw or engagement_id
+
+    all_engs = list_engagements()
+    if not any(e.get("engagement_id") == target for e in all_engs):
+        return {"ok": False, "error": f"Engagement {target} not found. Nothing deleted."}
+
+    to_delete = [e["engagement_id"] for e in all_engs if e["engagement_id"] != target]
+    if not to_delete:
+        return {"ok": True, "message": f"Only {target} exists; no other data to remove.", "deleted": {}}
+
+    counts = {}
+    for table, col in [
+        ("hitl_events", "engagement_id"),
+        ("fit_gap_assessments", "engagement_id"),
+        ("process_steps", "engagement_id"),
+        ("requirements", "engagement_id"),
+        ("ricefw_inventory", "engagement_id"),
+        ("gap_results", "engagement_id"),
+        ("assets", "engagement_id"),
+        ("platform_issues", "engagement_id"),
+        ("audit_events", "engagement_id"),
+        ("benchmark_hints", "engagement_id"),
+        ("feedback_events", "engagement_id"),
+    ]:
+        try:
+            r = supabase.table(table).delete().filter(col, "in", to_delete).execute()
+            counts[table] = len(r.data) if r.data else 0
+        except Exception:
+            # feedback_events may have null engagement_id; table might not exist
+            counts[table] = 0
+
+    for eid in to_delete:
+        try:
+            delete_engagement(eid)
+            counts["engagements"] = counts.get("engagements", 0) + 1
+        except Exception:
+            pass
+
+    remaining = list_engagements()
+    client_ids_kept = {e.get("client_id") for e in remaining if e.get("client_id")}
+    all_clients = list_clients()
+    for c in all_clients:
+        cid = c.get("client_id")
+        if cid and cid not in client_ids_kept:
+            try:
+                delete_client(cid)
+                counts["clients"] = counts.get("clients", 0) + 1
+            except Exception:
+                pass
+
+    return {"ok": True, "message": f"Retained only {target}. Removed other engagements and orphan clients.", "deleted": counts}
