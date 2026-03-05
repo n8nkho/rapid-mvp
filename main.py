@@ -75,6 +75,7 @@ from database import (
     create_platform_issue,
     list_platform_issues,
     update_platform_issue,
+    create_audit_event,
     list_audit_events_by_engagement,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
@@ -3755,7 +3756,7 @@ def post_agent_maturity(role_id: str, body: MaturityScoreCreate):
 
 
 @router.post("/simulate/agent-response")
-def simulate_agent_response(body: SimulateAgentRequest):
+def simulate_agent_response(request: Request, body: SimulateAgentRequest):
     """Get a single agent reply: load role + knowledge, build system prompt, call LLM, return reply. Injects pattern library."""
     role = get_agent_role_by_role_id(body.agent_role_id)
     if not role:
@@ -3799,11 +3800,24 @@ def simulate_agent_response(body: SimulateAgentRequest):
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
     content = (result.get("content") or "").strip()
-    return {"agent_role_id": body.agent_role_id, "phase": phase, "reply": content}
+    out = {"agent_role_id": body.agent_role_id, "phase": phase, "reply": content}
+    try:
+        create_audit_event(
+            engagement_id=body.engagement_id or "",
+            action="agent_response",
+            entity_type="simulation",
+            entity_id=body.agent_role_id,
+            actor_id=request.headers.get("X-Actor-Id"),
+            actor_role=request.headers.get("X-Actor-Role"),
+            details={"phase": phase},
+        )
+    except Exception:
+        pass
+    return out
 
 
 @router.post("/platform-issues", status_code=201)
-def post_platform_issue(body: PlatformIssueCreate):
+def post_platform_issue(request: Request, body: PlatformIssueCreate):
     """Create a platform issue (e.g. from simulation when an agent hits a limitation)."""
     try:
         record = create_platform_issue({
@@ -3818,6 +3832,18 @@ def post_platform_issue(body: PlatformIssueCreate):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    try:
+        create_audit_event(
+            engagement_id=body.engagement_id or "",
+            action="platform_issue_created",
+            entity_type="platform_issue",
+            entity_id=record.get("id"),
+            actor_id=request.headers.get("X-Actor-Id"),
+            actor_role=request.headers.get("X-Actor-Role"),
+            details={"problem_description": (body.problem_description or "")[:200]},
+        )
+    except Exception:
+        pass
     return record
 
 
@@ -3837,7 +3863,7 @@ def get_platform_issues(
 
 
 @router.patch("/platform-issues/{issue_id}")
-def patch_platform_issue(issue_id: str, body: PlatformIssueUpdate):
+def patch_platform_issue(request: Request, issue_id: str, body: PlatformIssueUpdate, engagement_id: Optional[str] = None):
     """Update platform issue status or priority."""
     updates = {}
     if body.status is not None:
@@ -3850,6 +3876,20 @@ def patch_platform_issue(issue_id: str, body: PlatformIssueUpdate):
         record = update_platform_issue(issue_id, updates)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    eng_id = engagement_id or (record.get("engagement_id") if record else None)
+    if eng_id:
+        try:
+            create_audit_event(
+                engagement_id=eng_id,
+                action="platform_issue_updated",
+                entity_type="platform_issue",
+                entity_id=issue_id,
+                actor_id=request.headers.get("X-Actor-Id"),
+                actor_role=request.headers.get("X-Actor-Role"),
+                details=updates,
+            )
+        except Exception:
+            pass
     return record
 
 
@@ -4111,6 +4151,22 @@ CREATE INDEX IF NOT EXISTS idx_platform_issues_engagement ON platform_issues (en
 CREATE INDEX IF NOT EXISTS idx_platform_issues_priority ON platform_issues (priority);
 """
 
+_AUDIT_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS audit_events (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id   text NOT NULL,
+  action          text NOT NULL,
+  entity_type     text,
+  entity_id       text,
+  actor_id        text,
+  actor_role      text,
+  details         jsonb DEFAULT '{}',
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_engagement ON audit_events (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events (created_at DESC);
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -4234,6 +4290,7 @@ def run_migrations():
             cur.execute(_FEEDBACK_PATTERN_DDL)
             cur.execute(_BENCHMARK_HINTS_DDL)
             cur.execute(_AGENT_ROLES_DDL)
+            cur.execute(_AUDIT_EVENTS_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -4256,18 +4313,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
     }
 
 
