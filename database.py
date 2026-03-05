@@ -762,3 +762,31 @@ def list_platform_issues(engagement_id: str = None, priority: str = None, status
 def update_platform_issue(issue_id: str, updates: dict) -> dict:
     response = supabase.table("platform_issues").update(updates).eq("id", issue_id).execute()
     return response.data[0] if response.data else {}
+
+
+# ── Audit events (agentic era, HITL, compliance) ─────────────────────────────
+
+def create_audit_event(engagement_id: str, action: str, entity_type: str = None, entity_id: str = None, actor_id: str = None, actor_role: str = None, details: dict = None) -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "actor_id": actor_id,
+        "actor_role": actor_role,
+        "details": details or {},
+    }
+    response = supabase.table("audit_events").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def list_audit_events_by_engagement(engagement_id: str, limit: int = 200) -> list:
+    response = (
+        supabase.table("audit_events")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return response.data or []
