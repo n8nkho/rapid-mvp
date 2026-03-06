@@ -12,7 +12,7 @@ Controlled by env: `CORS_ORIGINS` (comma-separated). If unset, defaults to https
 
 ## Config and security
 - **Env validation:** Required vars (SUPABASE_URL, SUPABASE_KEY) are validated at startup; app fails fast if missing. See `.env.example` and README.md.
-- **Admin:** `POST /admin/migrate` is protected when `ADMIN_API_KEY` is set; send header `X-Admin-Key: <value>`.
+- **Admin:** `POST /v1/admin/migrate` is on a separate router and does not require the general API key. When `ADMIN_API_KEY` is set, send header `X-Admin-Key: <value>` or query `?admin_key=<value>`. When unset, migrate runs without auth.
 - **5xx responses:** Global exception handlers return a generic message and `request_id`; internal details are logged only.
 
 ## Key Models

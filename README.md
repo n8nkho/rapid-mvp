@@ -38,7 +38,7 @@ FastAPI backend for the RAPID platform: AI-powered SAP S/4HANA scope item gap an
 | `ANTHROPIC_API_KEY` | No | For LLM-based gap analysis and extraction |
 | `CORS_ORIGINS` | No | Comma-separated allowed origins (default: Vercel app + localhost:3000) |
 | `DATABASE_URL` | No | Direct PostgreSQL URL for `/admin/migrate` auto-migration |
-| `ADMIN_API_KEY` | No | If set, `/v1/admin/migrate` requires header `X-Admin-Key: <value>` |
+| `ADMIN_API_KEY` | No | If set, `/v1/admin/migrate` requires `X-Admin-Key` header or `?admin_key=` (no general API key needed for migrate) |
 | `API_KEY` | No | If set, all `/v1` routes require `X-API-Key` or `Authorization: Bearer <key>` |
 
 Application fails to start if required variables are missing. See `.env.example` for a template.
