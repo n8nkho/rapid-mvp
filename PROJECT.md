@@ -11,39 +11,36 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-04 (Audit trail, post-deploy, next phase)
+**Last updated:** 2026-03-05 (Enterprise upgrade Phases A–G complete)
 
-**Checkpoint tag:** `rapid-checkpoint-2026-03-04` — use this to resume or for a new agent.
+**Checkpoint tag:** `RAPID_CHECKPOINT_2026-03-05` — resume from **docs/RAPID_CHECKPOINT_2026-03-05.md**; prompt: see that file or "Continue RAPID from checkpoint".
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
 - Gap analysis (244 scope items), analyse-all
-- HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events
+- HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events; **GET /engagement/{id}/hitl-report** (Excel)
 - **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
-- **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate (from approved gap_ricefw assessments → ricefw_inventory)
+- **Sources (enterprise):** sources table; POST/GET/PATCH/DELETE /sources, GET /engagement/{id}/sources, **POST /sources/{id}/extract** (LLM); requirement columns source_id, source_excerpt, extraction_confidence
+- **GET /engagement/{id}/completion-check** — engagement completion checklist (all reqs have fit-gap, all assessments reviewed)
+- **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate
 - Engagement summary, process-mirror, KPI summary
 - Process steps CRUD + extract; workflow BPMN
 - RICEFW inventory (list, add, edit, delete, export Excel)
-- Requirements + RICEFW Excel export/import; **Phase F:** requirements export includes optional second sheet "Fit-Gap"; GET /requirements/template/download (RTM template)
-- **Feedback & pattern library (Phase D):** feedback_events, pattern_library; POST /feedback, GET /feedback, GET /pattern-library; 30 patterns seeded
-- **Sector & benchmarks (Phase E):** benchmark_hints; GET /engagement/{id}/benchmark-hints; POST /clients/{id}/benchmark-opt-out
-- **Agent Team & Simulation:** agent_roles, platform_issues; GET /agent-roles, POST /simulate/agent-response, POST/GET/PATCH /platform-issues, GET /engagement/{id}/platform-backlog. Simulation script: `scripts/run_zero_ev_simulation.py`.
-- **Audit (agentic era):** audit_events table; GET /engagement/{id}/audit-trail (merged HITL + audit); audit logging on simulate + platform-issues (X-Actor-Id, X-Actor-Role). Post-deploy: `ADMIN_API_KEY=xxx ./scripts/post_deploy.sh` (migrate + smoke checks); manual SQL in Supabase if DATABASE_URL not set.
-- Supabase: requirements, gap_results, process_steps, ricefw_inventory, hitl_events, fit_gap_assessments, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, **audit_events**
+- Requirements + RICEFW Excel export/import; Phase F: requirements export optional "Fit-Gap" sheet; GET /requirements/template/download
+- Feedback & pattern library, Sector & benchmarks, Agent Team & Simulation, Audit (audit_events, audit-trail)
+- Supabase: … **sources**, audit_events, etc. (run POST /admin/migrate for sources table)
 
 **OPEN ERRORS TO FIX:**
 - None.
 
 **NEXT IMPROVEMENTS TO CONTINUE:**
-1. **Frontend (rapid-ui):** implement per **docs/FRONTEND_AGENT_BACKLOG_SPEC.md**: Agent Simulation page, Platform Backlog, **Audit Trail** (GET /engagement/{id}/audit-trail; send X-Actor-Id / X-Actor-Role on simulate and platform-issues). See **docs/AGENTIC_ERA_UI_DESIGN.md** for HITL and compliance UX.
-2. Optional: manual browser test per docs/READY_FOR_BROWSER_CHECK.md (engagement ENG-016: requirements, fit-gap, platform backlog).
+1. **docs/ENTERPRISE_UPGRADE_IMPROVEMENTS.md** — further items (referential integrity block delete, duplicate-check, HITL role-based views, etc.).
+2. Optional: browser test; commit and deploy any uncommitted changes.
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
-- 2026-03-04: Fallback tag `rapid-fallback-pre-zero-ev-2026-03-04`. Zero EV simulation script fix (GET /engagements → engagements key); 401 hint; **docs/SEED_ZERO_EV_FOR_BROWSER_CHECK.md** for seeding Zero EV and browser-check URLs.
-- 2026-03-04: Audit trail API, audit_events in migrate, post_deploy.sh (migrate + smoke checks; handle manual_required). Frontend spec updated with audit-trail and actor headers.
-- 2026-03-04: Agent team, platform-issues, simulation; Railway connected; checkpoint rapid-checkpoint-2026-03-04.
-- Phase F complete: requirements export second sheet "Fit-Gap"; GET /requirements/template/download; frontend "Download template".
+- 2026-03-05: Enterprise Phases A–G: sources table + LLM extract; left sidebar + mission-control home; /sources two-panel + add source + extract; /requirements filters + drawer + pagination; Fit-Gap sticky summary + cost; HITL column descriptions + hitl-report Excel; completion checklist on engagement detail; onboarding wizard + empty states. Marker: **docs/RAPID_CHECKPOINT_2026-03-05.md**.
+- 2026-03-04: Audit trail, Agent Simulation, Platform Backlog; checkpoint rapid-checkpoint-2026-03-04.
 - Fallback tag: `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
 
 ## Architecture decisions
@@ -61,10 +58,10 @@ Run Claude Code: cd ~/Documents/rapid-mvp && claude
 Test backend: curl https://rapid-mvp-production.up.railway.app/health
 
 ## How to continue with any AI
-1. Share PROJECT.md and CLAUDE.md (this repo).
-2. **Short prompt:** `Continue RAPID` or `RAPID checkpoint`
+1. Share PROJECT.md and CLAUDE.md (this repo); for frontend also share rapid-ui PROJECT.md and CLAUDE.md.
+2. **Short prompt:** Use the copy-paste prompt in **docs/RAPID_CHECKPOINT_2026-03-05.md** (or say: "Continue RAPID from checkpoint").
 3. New agent should: read PROJECT.md (Open errors + Next improvements), then CLAUDE.md; fix open errors first, then pick next improvements.
-4. Checkpoint tag to resume from: `rapid-checkpoint-2026-03-04`.
+4. Checkpoint marker: **docs/RAPID_CHECKPOINT_2026-03-05.md**.
 
 
 ## Feature Backlog (prioritised sprints)

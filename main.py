@@ -64,6 +64,8 @@ from database import (
     get_fit_gap_by_engagement,
     get_fit_gap_by_assessment_id,
     update_fit_gap_assessment,
+    delete_fit_gap_assessment,
+    delete_requirement,
     create_feedback_event,
     list_feedback_events,
     get_pattern_library,
@@ -279,11 +281,20 @@ class RequirementUpdate(BaseModel):
     hitl_history: Optional[List[Dict]] = None
     ai_rationale: Optional[str] = None
     reviewer_notes: Optional[str] = None
+    # Enterprise: archive instead of delete when approved FGA
+    archived: Optional[bool] = None
 
 class TranscriptExtractRequest(BaseModel):
     engagement_id: str
     stakeholder: str
     transcript_text: str
+
+
+class DuplicateCheckRequest(BaseModel):
+    engagement_id: str
+    title: str
+    exclude_req_id: Optional[str] = None  # when editing, exclude self from matches
+
 
 class ArchaeologistSessionRequest(BaseModel):
     engagement_id: str
@@ -1454,6 +1465,31 @@ def patch_requirement(req_id: str, engagement_id: str, body: RequirementUpdate):
     if not req:
         raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
     return req
+
+
+@router.delete("/requirements/{req_id}", status_code=204)
+def delete_requirement_route(req_id: str, engagement_id: str):
+    """Delete requirement. Blocked if approved fit-gap or linked RICEFW (409)."""
+    req = get_requirement_by_id(req_id, engagement_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+    assessments = [a for a in (get_fit_gap_by_engagement(engagement_id) or []) if a.get("req_id") == req_id]
+    for a in assessments:
+        if (a.get("hitl_state") or "").lower() in ("approved", "out_of_scope"):
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete requirement with approved fit-gap assessment. Archive instead.",
+            )
+    ricefw_items = [r for r in (get_ricefw_by_engagement(engagement_id) or []) if r.get("req_id") == req_id]
+    if ricefw_items:
+        raise HTTPException(
+            status_code=409,
+            detail="Remove RICEFW link first. One or more RICEFW items reference this requirement.",
+        )
+    try:
+        delete_requirement(req_id, engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/requirements/{req_id}/sign-off", response_model=RequirementResponse)

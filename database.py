@@ -776,6 +776,41 @@ def update_fit_gap_assessment(assessment_id: str, engagement_id: str, updates: d
     return response.data[0] if response.data else {}
 
 
+def delete_fit_gap_assessment(assessment_id: str, engagement_id: str) -> bool:
+    """Delete a fit-gap assessment. Caller must verify no linked RICEFW first."""
+    response = (
+        supabase.table("fit_gap_assessments")
+        .delete()
+        .eq("assessment_id", assessment_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def delete_requirement(req_id: str, engagement_id: str) -> bool:
+    """Delete requirement and cascade: process_steps, gap_results, fit_gap_assessments, hitl_events.
+    Caller must verify no approved FGA and no linked RICEFW first."""
+    for table, col in [
+        ("process_steps", "req_id"),
+        ("gap_results", "req_id"),
+        ("fit_gap_assessments", "req_id"),
+        ("hitl_events", "req_id"),
+    ]:
+        try:
+            supabase.table(table).delete().eq(col, req_id).eq("engagement_id", engagement_id).execute()
+        except Exception:
+            pass
+    response = (
+        supabase.table("requirements")
+        .delete()
+        .eq("req_id", req_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
 # ── Feedback & Pattern Library (Phase D) ────────────────────────────────────
 
 def create_feedback_event(engagement_id: str = None, event_type: str = "", payload: dict = None) -> dict:

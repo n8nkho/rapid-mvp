@@ -106,18 +106,14 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **database.py:** update_client(client_id, updates), get_benchmark_hints_by_engagement(engagement_id), create_benchmark_hint(...).
 
 ## Current status / recent changes (for new agents)
-- **Checkpoint tag:** `rapid-checkpoint-2026-03-04`. Resume with prompt: **Continue RAPID** or **RAPID checkpoint**; read PROJECT.md first (Open errors + Next improvements).
+- **Checkpoint marker:** **docs/RAPID_CHECKPOINT_2026-03-05.md**. Resume with prompt in that file (or "Continue RAPID from checkpoint"). Read PROJECT.md first.
 - **PROJECT.md** has "Current Status / Recent Changes", "Open errors to fix", and "Next improvements to continue".
-- **Open errors:** None (fit_gap_assessments + ANTHROPIC fixed; simulation: 87 reqs, 87 fit-gap, gaps populated).
-- **Next:** See docs/NEXT_PHASE.md. Frontend (rapid-ui): Agent Simulation, Platform Backlog, Audit Trail per docs/FRONTEND_AGENT_BACKLOG_SPEC.md; optional browser test per READY_FOR_BROWSER_CHECK.md.
-- **REFINED_BACKLOG.md** defines phased implementation (Phase A–F done).
-- **Fallback tag:** `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
-- **HITL:** hitl_state; hitl-advance, hitl-reject, hitl-queue, hitl-events. Frontend: /hitl.
-- **Fit/Gap:** fit_gap_assessments table + endpoints; create table in Supabase if missing. Frontend: /fitgap.
-- **RICEFW from gaps:** POST ricefw-generate; frontend "Generate from Gaps" on engagement #ricefw.
-- **Phase D:** feedback_events, pattern_library; POST/GET feedback, GET pattern-library; patterns injected.
-- **Phase E:** sector_archetype, benchmark_hints; GET benchmark-hints, POST benchmark-opt-out.
-- **Agent Team:** agent_roles, platform_issues, etc.; GET /agent-roles, POST /simulate/agent-response, POST/GET /platform-issues, GET /engagement/{id}/platform-backlog. Railway connected to n8nkho/rapid-mvp.
+- **Open errors:** None.
+- **Enterprise upgrade (Phases A–G done):** Sources table + POST/GET/PATCH/DELETE /sources, GET /engagement/{id}/sources, POST /sources/{id}/extract (LLM); requirement columns source_id, source_excerpt, extraction_confidence; GET /engagement/{id}/completion-check; GET /engagement/{id}/hitl-report (Excel). Frontend: left sidebar, mission-control home, /sources, /requirements (filters + drawer), /audit, Fit-Gap sticky summary + cost, HITL column descriptions + download report, completion checklist on engagement detail, onboarding wizard + empty states.
+- **Sources:** create_source, list_sources_by_engagement, etc. in database.py; _SOURCES_DDL and _REQUIREMENTS_SOURCE_DDL in run_migrations.
+- **HITL:** hitl-queue, hitl-events, **hitl-report** (Excel). Frontend: /hitl.
+- **Fit/Gap:** fit_gap_assessments + endpoints. Frontend: /fitgap with sticky summary bar.
+- **RICEFW from gaps:** POST ricefw-generate. **Agent Team:** agent_roles, platform_issues, simulate, platform-backlog. **Fallback tag:** rapid-fallback-2026-03-02.
 
 ## Excel export polish (Phase F)
 - **Requirements export:** GET /v1/engagement/{engagement_id}/requirements/export — first sheet "Requirements" (unchanged). When fit_gap_assessments exist for the engagement, second sheet "Fit-Gap" is added (assessment_id, req_id, fit_type, complexity, rationale, sap_scope_item_*, effort days, cost_band, confidence_score, hitl_state, reviewed_by, reviewer_notes).
