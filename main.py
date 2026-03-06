@@ -498,7 +498,7 @@ class FitGapReviewRequest(BaseModel):
 
 # Agent Team & Simulation
 class SimulateAgentRequest(BaseModel):
-    engagement_id: str
+    engagement_id: Optional[str] = ""
     agent_role_id: str
     phase: Optional[str] = None
     context_message: Optional[str] = None
@@ -4703,6 +4703,28 @@ _AGENT_ROLES_SEED_A = [
      ["Scope", "Fit/gap", "Clean core", "S/4HANA"], "Guide solution design; prefer standard over custom.", "Escalate for scope or risk decisions."),
     ("a_change_manager", "A_Change_Manager", "Change and adoption lead. Focus on training and user adoption.",
      ["Training", "Adoption", "Communication", "Stakeholders"], "Identify change risks and training needs.", "Escalate when change impact is high."),
+    ("a_engagement_manager", "A_Engagement_Manager", (
+        "Act as an Engagement Manager for Discovery and Assessment engagements. Your role is to operate like a human "
+        "engagement manager: create and manage clients, create and manage engagements, and oversee end-to-end "
+        "engagement delivery with the consulting team. "
+        "You help users fill in Client and Engagement forms by asking clarifying questions, suggesting probable answers "
+        "for each field, and recommending use of the pre-fill-from-website feature when the user provides a client "
+        "website URL. "
+        "Discovery/Assessment engagement manager tasks you perform: (1) Client onboarding: gather company profile, "
+        "industry, size, current systems, strategic goals; suggest pre-filling from company website when user has a URL. "
+        "(2) Engagement setup: define engagement name, phase (e.g. Discovery, Blueprint), scope, team, timeline. "
+        "(3) Stakeholder alignment: identify sponsors, process owners, and key contacts. "
+        "(4) Scope and deliverables: clarify discovery deliverables (as-is process, requirements, fit/gap). "
+        "(5) Risk and governance: surface risks, assumptions, dependencies; suggest next steps. "
+        "When assisting on the Create Client form, ask one or two questions at a time about name, industry, employees, "
+        "current systems, or goals; suggest concrete options where possible. If the user provides a company URL, "
+        "recommend they use the 'Pre-fill from company website' feature and paste the URL there. "
+        "When assisting on the Create Engagement form, ask about engagement name, phase, client selection, description, "
+        "or timeline; keep answers concise and actionable."
+    ),
+     ["Client setup", "Engagement setup", "Pre-fill from website", "Stakeholder alignment", "Scope and deliverables", "Discovery", "Assessment", "Governance"],
+     "Ask short, focused questions. Suggest probable answers or options. Recommend pre-fill when user has a company URL.",
+     "Escalate when scope or governance decision is beyond guidance."),
 ]
 
 _AGENT_KNOWLEDGE_SEED = [
@@ -4714,6 +4736,9 @@ _AGENT_KNOWLEDGE_SEED = [
     ("finance_sme", "finance", "Multi-currency, multi-GAAP, period close speed (e.g. 8-day close as pain point). Revenue recognition and costing for EV/manufacturing.", "zero_like"),
     ("it_architect", "integration", "Integrations: PLM (engineering), MES (shop floor), CRM, bank, tax engines. Data migration and security boundaries must be explicit.", "technical"),
     ("change_ux", "change", "User adoption and training needs scale with process change. Identify process owners and high-change areas early.", "change_mgmt"),
+    ("a_engagement_manager", "client_setup", "Client form fields: name (required), industry, employees, legal_entities, current systems, systems to keep/replace, countries, regulatory environment, business strategy, goals, key products, value proposition, senior executives, competitors. Suggest pre-fill from website when user has a company URL.", "engagement_mgr"),
+    ("a_engagement_manager", "engagement_setup", "Engagement form: select client first, then engagement name, description, phase (Discovery, Blueprint, Realization, Go-Live), status. Discovery/Assessment phase focuses on as-is, requirements, and fit/gap.", "engagement_mgr"),
+    ("a_engagement_manager", "prefill", "Pre-fill from website: user pastes a company URL (e.g. About or Overview page); the system fetches the page and uses AI to extract company profile to pre-populate the Create Client form. Recommend this when user mentions a website or URL.", "engagement_mgr"),
 ]
 
 # Seed patterns for Phase D (business/process discovery and fit-gap)
