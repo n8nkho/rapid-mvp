@@ -179,6 +179,8 @@ async def add_request_id(request: Request, call_next):
 
 # v1 API: all routes under /v1; optional API key when API_KEY env is set
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
+# Admin routes: no API key required; only X-Admin-Key (or query admin_key) when ADMIN_API_KEY is set
+admin_router = APIRouter(prefix="/v1")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -4708,22 +4710,22 @@ _AGENT_ROLES_SEED_A = [
         "engagement manager: create and manage clients, create and manage engagements, and oversee end-to-end "
         "engagement delivery with the consulting team. "
         "You help users fill in Client and Engagement forms by asking clarifying questions, suggesting probable answers "
-        "for each field, and recommending use of the pre-fill-from-website feature when the user provides a client "
-        "website URL. "
-        "Discovery/Assessment engagement manager tasks you perform: (1) Client onboarding: gather company profile, "
-        "industry, size, current systems, strategic goals; suggest pre-filling from company website when user has a URL. "
-        "(2) Engagement setup: define engagement name, phase (e.g. Discovery, Blueprint), scope, team, timeline. "
-        "(3) Stakeholder alignment: identify sponsors, process owners, and key contacts. "
-        "(4) Scope and deliverables: clarify discovery deliverables (as-is process, requirements, fit/gap). "
-        "(5) Risk and governance: surface risks, assumptions, dependencies; suggest next steps. "
-        "When assisting on the Create Client form, ask one or two questions at a time about name, industry, employees, "
-        "current systems, or goals; suggest concrete options where possible. If the user provides a company URL, "
-        "recommend they use the 'Pre-fill from company website' feature and paste the URL there. "
-        "When assisting on the Create Engagement form, ask about engagement name, phase, client selection, description, "
-        "or timeline; keep answers concise and actionable."
+        "for each field. "
+        "CRITICAL: When the user provides a company website URL (e.g. phoenixglobal.com or https://example.com), "
+        "the system will automatically pre-fill the Create Client form from that URL. Tell the user: 'I have triggered "
+        "pre-fill from that URL—check the form above; many fields should now be filled. I can help you refine or fill "
+        "any remaining fields.' Do not ask for details that the pre-fill likely already filled (name, industry, etc.) "
+        "until they have checked the form. "
+        "When you summarize a client record in a table (e.g. **Name** | X, **Industry** | Y), tell the user: 'Click "
+        "\"Apply to form\" above to copy these into the Create Client form, then submit Create Client when ready.' "
+        "Discovery/Assessment tasks: (1) Client onboarding: use pre-fill when user gives a URL; then ask only missing "
+        "or unclear items (headcount, countries, regulatory, primary contact). (2) Engagement setup: engagement name, "
+        "phase, scope, timeline. (3) Stakeholder alignment, scope and deliverables, risk and governance. "
+        "Ask one or two questions at a time. Suggest concrete options. When assisting on Create Engagement form, "
+        "ask about name, phase, client, description, timeline; keep answers concise."
     ),
      ["Client setup", "Engagement setup", "Pre-fill from website", "Stakeholder alignment", "Scope and deliverables", "Discovery", "Assessment", "Governance"],
-     "Ask short, focused questions. Suggest probable answers or options. Recommend pre-fill when user has a company URL.",
+     "When user sends a URL: confirm pre-fill was triggered and suggest they check the form. When you output a client summary table: tell them to click Apply to form. Ask short questions; suggest options.",
      "Escalate when scope or governance decision is beyond guidance."),
 ]
 
@@ -4738,7 +4740,7 @@ _AGENT_KNOWLEDGE_SEED = [
     ("change_ux", "change", "User adoption and training needs scale with process change. Identify process owners and high-change areas early.", "change_mgmt"),
     ("a_engagement_manager", "client_setup", "Client form fields: name (required), industry, employees, legal_entities, current systems, systems to keep/replace, countries, regulatory environment, business strategy, goals, key products, value proposition, senior executives, competitors. Suggest pre-fill from website when user has a company URL.", "engagement_mgr"),
     ("a_engagement_manager", "engagement_setup", "Engagement form: select client first, then engagement name, description, phase (Discovery, Blueprint, Realization, Go-Live), status. Discovery/Assessment phase focuses on as-is, requirements, and fit/gap.", "engagement_mgr"),
-    ("a_engagement_manager", "prefill", "Pre-fill from website: user pastes a company URL (e.g. About or Overview page); the system fetches the page and uses AI to extract company profile to pre-populate the Create Client form. Recommend this when user mentions a website or URL.", "engagement_mgr"),
+    ("a_engagement_manager", "prefill", "Pre-fill from website: when the user pastes a company URL, the UI automatically runs pre-fill (no extra step). Tell the user the form above has been or is being filled from that URL and to check it; then ask only for any remaining fields (e.g. headcount, countries, primary contact). When you reply with a client summary table, always tell the user to click 'Apply to form' to copy values into the form.", "engagement_mgr"),
 ]
 
 # Seed patterns for Phase D (business/process discovery and fit-gap)
@@ -4791,10 +4793,13 @@ def _get_pg_dsn() -> str:
     )
 
 
-def _require_admin_key(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
-    """If ADMIN_API_KEY is set, require X-Admin-Key header to match."""
-    key = os.getenv("ADMIN_API_KEY")
-    if key and x_admin_key != key:
+def _require_admin_key(request: Request, x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """If ADMIN_API_KEY is set, require X-Admin-Key header or query param admin_key to match. If unset, allow."""
+    key = (os.getenv("ADMIN_API_KEY") or "").strip()
+    if not key:
+        return
+    provided = (x_admin_key or "").strip() or (request.query_params.get("admin_key") or "").strip()
+    if provided != key:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -4802,13 +4807,13 @@ class RetainEngagementRequest(BaseModel):
     engagement_id: str
 
 
-@router.post("/admin/retain-engagement", status_code=200, dependencies=[Depends(_require_admin_key)])
+@admin_router.post("/admin/retain-engagement", status_code=200, dependencies=[Depends(_require_admin_key)])
 def admin_retain_engagement(body: RetainEngagementRequest):
     """Remove all clients and engagements except the given one (e.g. ENG-016). Destructive."""
     return retain_only_engagement(body.engagement_id)
 
 
-@router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])
+@admin_router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])
 def run_migrations():
     """Create required tables if they don't exist.
     Set DATABASE_URL env var to a direct PostgreSQL connection string (e.g., from Supabase dashboard).
@@ -4880,4 +4885,5 @@ def run_migrations():
     }
 
 
+app.include_router(admin_router)
 app.include_router(router)
