@@ -79,6 +79,11 @@ from database import (
     create_audit_event,
     list_audit_events_by_engagement,
     retain_only_engagement,
+    create_source,
+    get_source,
+    list_sources_by_engagement,
+    update_source,
+    delete_source,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -1962,6 +1967,157 @@ def engagement_audit_trail(engagement_id: str, limit: int = 100):
     for x in combined:
         x.pop("_sort_at", None)
     return {"engagement_id": engagement_id, "events": combined[:limit], "total": len(combined)}
+
+
+@router.get("/engagement/{engagement_id}/completion-check", tags=["govern"])
+def get_completion_check(engagement_id: str):
+    """Engagement completion checklist: all reqs have fit-gap, all assessments HITL approved or out_of_scope."""
+    try:
+        eng = get_engagement(engagement_id)
+        if not eng:
+            raise HTTPException(status_code=404, detail="Engagement not found")
+        requirements = get_requirements_by_engagement(engagement_id)
+        assessments = get_fit_gap_by_engagement(engagement_id)
+        req_ids_with_fga = {a["req_id"] for a in assessments}
+        all_have_fga = all(r["req_id"] in req_ids_with_fga for r in requirements) if requirements else True
+        approved_or_scope = sum(
+            1 for a in assessments
+            if (a.get("hitl_state") or "").lower() in ("approved", "out_of_scope")
+        )
+        total_fga = len(assessments)
+        all_fga_reviewed = (total_fga == approved_or_scope) if total_fga else True
+        return {
+            "engagement_id": engagement_id,
+            "total_requirements": len(requirements),
+            "total_assessments": total_fga,
+            "all_requirements_have_fit_gap": all_have_fga,
+            "all_assessments_reviewed": all_fga_reviewed,
+            "approved_or_out_of_scope_count": approved_or_scope,
+            "complete": all_have_fga and all_fga_reviewed,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Sources (enterprise multi-source capture) ───────────────────────────────
+
+class SourceCreate(BaseModel):
+    engagement_id: str
+    source_type: str  # transcript|notes|excel|document|workshop
+    title: str
+    raw_content: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+class SourceUpdate(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    raw_content: Optional[str] = None
+    extracted_count: Optional[int] = None
+
+
+@router.post("/sources", status_code=201)
+def post_source(body: SourceCreate):
+    """Create a source for an engagement."""
+    try:
+        out = create_source(
+            engagement_id=body.engagement_id,
+            source_type=body.source_type,
+            title=body.title or "Untitled",
+            raw_content=body.raw_content,
+            file_url=body.file_url,
+            file_name=body.file_name,
+            created_by=body.created_by,
+        )
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sources")
+def list_sources(engagement_id: str):
+    """List sources for an engagement. Query param: engagement_id."""
+    try:
+        items = list_sources_by_engagement(engagement_id)
+        return {"engagement_id": engagement_id, "sources": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/engagement/{engagement_id}/sources")
+def get_engagement_sources(engagement_id: str):
+    """List sources for an engagement."""
+    try:
+        items = list_sources_by_engagement(engagement_id)
+        return {"engagement_id": engagement_id, "sources": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sources/{source_id}")
+def get_source_by_id(source_id: str, engagement_id: str):
+    """Get a single source. Query param: engagement_id."""
+    try:
+        out = get_source(source_id, engagement_id)
+        if not out:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/sources/{source_id}")
+def patch_source(source_id: str, body: SourceUpdate, engagement_id: str):
+    """Update a source. Query param: engagement_id."""
+    try:
+        existing = get_source(source_id, engagement_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Source not found")
+        updates = body.model_dump(exclude_unset=True)
+        out = update_source(source_id, engagement_id, updates)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sources/{source_id}")
+def delete_source_route(source_id: str, engagement_id: str):
+    """Delete a source. Query param: engagement_id."""
+    try:
+        existing = get_source(source_id, engagement_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Source not found")
+        delete_source(source_id, engagement_id)
+        return {"deleted": source_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sources/{source_id}/extract")
+def post_source_extract(source_id: str, engagement_id: str):
+    """Extract requirements from a source (AI). Stub: returns empty list until LLM integration."""
+    try:
+        src = get_source(source_id, engagement_id)
+        if not src:
+            raise HTTPException(status_code=404, detail="Source not found")
+        update_source(source_id, engagement_id, {"status": "processing"})
+        # TODO: call LLM to extract requirements; create requirements with source_id; set status=extracted, extracted_count=N
+        update_source(source_id, engagement_id, {"status": "extracted", "extracted_count": 0})
+        return {"source_id": source_id, "engagement_id": engagement_id, "extracted": 0, "message": "Extract stub; no requirements created."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Analyse All ───────────────────────────────────────────────────────────────
@@ -4182,6 +4338,33 @@ ALTER TABLE requirements ADD COLUMN IF NOT EXISTS fit_type text;
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS related_test_case_id text;
 """
 
+# Enterprise: source_id, source_excerpt, extraction_confidence, acceptance_criteria, kpi_impact, archived
+_REQUIREMENTS_SOURCE_DDL = """
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS source_id text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS source_excerpt text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS extraction_confidence float;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS acceptance_criteria text;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS archived boolean DEFAULT false;
+"""
+
+_SOURCES_DDL = """
+CREATE TABLE IF NOT EXISTS sources (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id text NOT NULL UNIQUE,
+  engagement_id text NOT NULL,
+  source_type text NOT NULL,
+  title text NOT NULL DEFAULT '',
+  raw_content text,
+  file_url text,
+  file_name text,
+  status text NOT NULL DEFAULT 'uploaded',
+  extracted_count int DEFAULT 0,
+  created_by text,
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sources_engagement ON sources (engagement_id);
+"""
+
 _HITL_DDL = """
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS hitl_state text DEFAULT 'ai_draft';
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS hitl_history jsonb DEFAULT '[]';
@@ -4490,6 +4673,8 @@ def run_migrations():
             cur.execute(_CLIENTS_EXTRA_DDL)
             cur.execute(_ENGAGEMENTS_EXTRA_DDL)
             cur.execute(_REQUIREMENTS_EXTRA_DDL)
+            cur.execute(_REQUIREMENTS_SOURCE_DDL)
+            cur.execute(_SOURCES_DDL)
             cur.execute(_HITL_DDL)
             cur.execute(_FIT_GAP_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
@@ -4527,18 +4712,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
     }
 
 

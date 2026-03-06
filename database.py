@@ -368,6 +368,90 @@ def get_engagement_with_client(engagement_id: str) -> dict:
     return {**eng, "client": client or {}}
 
 
+# ── Sources (enterprise multi-source capture) ───────────────────────────────────
+
+def _next_source_id() -> str:
+    """Generate next sequential source_id (SRC-001) globally."""
+    response = supabase.table("sources").select("source_id").execute()
+    existing = response.data or []
+    nums = []
+    for row in existing:
+        try:
+            sid = row.get("source_id") or ""
+            if sid.startswith("SRC-"):
+                nums.append(int(sid.replace("SRC-", "").strip()))
+        except (ValueError, AttributeError):
+            pass
+    return f"SRC-{max(nums, default=0) + 1:03d}"
+
+
+def create_source(engagement_id: str, source_type: str, title: str, **kwargs) -> dict:
+    """Create a source record. source_type: transcript|notes|excel|document|workshop."""
+    source_id = _next_source_id()
+    record = {
+        "source_id": source_id,
+        "engagement_id": engagement_id,
+        "source_type": source_type,
+        "title": title or "Untitled",
+        "status": kwargs.get("status", "uploaded"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for k in ("raw_content", "file_url", "file_name", "extracted_count", "created_by"):
+        if kwargs.get(k) is not None:
+            record[k] = kwargs[k]
+    response = supabase.table("sources").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_source(source_id: str, engagement_id: str) -> dict:
+    response = (
+        supabase.table("sources")
+        .select("*")
+        .eq("source_id", source_id)
+        .eq("engagement_id", engagement_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def list_sources_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("sources")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def update_source(source_id: str, engagement_id: str, updates: dict) -> dict:
+    updates = {k: v for k, v in updates.items() if v is not None}
+    if not updates:
+        return get_source(source_id, engagement_id) or {}
+    response = (
+        supabase.table("sources")
+        .update(updates)
+        .eq("source_id", source_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def delete_source(source_id: str, engagement_id: str) -> bool:
+    response = (
+        supabase.table("sources")
+        .delete()
+        .eq("source_id", source_id)
+        .eq("engagement_id", engagement_id)
+        .execute()
+    )
+    return bool(response.data)
+
+
 # ── Assets ────────────────────────────────────────────────────────────────────
 
 def _next_asset_id(engagement_id: str) -> str:
@@ -859,6 +943,7 @@ def retain_only_engagement(engagement_id: str) -> dict:
         ("ricefw_inventory", "engagement_id"),
         ("gap_results", "engagement_id"),
         ("assets", "engagement_id"),
+        ("sources", "engagement_id"),
         ("platform_issues", "engagement_id"),
         ("audit_events", "engagement_id"),
         ("benchmark_hints", "engagement_id"),
