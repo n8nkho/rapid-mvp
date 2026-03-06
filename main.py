@@ -1936,6 +1936,50 @@ def get_hitl_queue(engagement_id: str):
     }
 
 
+@router.get("/engagement/{engagement_id}/hitl-report", response_class=StreamingResponse)
+def get_hitl_report(engagement_id: str):
+    """Download HITL report as Excel: requirements with state + HITL events log."""
+    try:
+        requirements = get_requirements_by_engagement(engagement_id)
+        events = list_hitl_events(engagement_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "HITL Summary"
+    ws1.append(["req_id", "title", "hitl_state", "business_process", "priority"])
+    for r in requirements:
+        ws1.append([
+            r.get("req_id"),
+            r.get("title"),
+            r.get("hitl_state") or "ai_draft",
+            r.get("business_process"),
+            r.get("priority"),
+        ])
+    ws2 = wb.create_sheet("HITL Events")
+    ws2.append(["event_id", "req_id", "from_state", "to_state", "actor", "actor_role", "notes", "created_at"])
+    for e in events:
+        ws2.append([
+            e.get("event_id"),
+            e.get("req_id"),
+            e.get("from_state"),
+            e.get("to_state"),
+            e.get("actor"),
+            e.get("actor_role"),
+            e.get("notes"),
+            e.get("created_at"),
+        ])
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    filename = f"{engagement_id}_hitl_report.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/engagement/{engagement_id}/hitl-events")
 def get_hitl_events(engagement_id: str):
     """Return HITL events audit trail for an engagement."""
@@ -2103,17 +2147,65 @@ def delete_source_route(source_id: str, engagement_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_SOURCE_EXTRACT_SYSTEM = """You are a senior SAP business analyst. Extract discrete business requirements from the given text (notes, document, or transcript).
+
+For each requirement return:
+- title: Brief title (max 10 words)
+- description: Detailed description
+- source_excerpt: Short quote from the text that supports this requirement (1-2 sentences)
+- business_process: One of Procure-to-Pay, Order-to-Cash, Record-to-Report, Plan-to-Produce, Hire-to-Retire, Other
+- priority: Must-Have, Should-Have, or Nice-to-Have
+- tags: Array — use only: pain_point, manual_step, secret_sauce, workaround, hand_off
+
+Return a JSON array only — no markdown:
+[{"title": "...", "description": "...", "source_excerpt": "...", "business_process": "...", "priority": "...", "tags": []}]
+Return [] if no clear requirements."""
+
+
 @router.post("/sources/{source_id}/extract")
 def post_source_extract(source_id: str, engagement_id: str):
-    """Extract requirements from a source (AI). Stub: returns empty list until LLM integration."""
+    """Extract requirements from a source using AI. Creates requirements with source_id and source_excerpt."""
     try:
         src = get_source(source_id, engagement_id)
         if not src:
             raise HTTPException(status_code=404, detail="Source not found")
+        raw = (src.get("raw_content") or "").strip()
+        if not raw:
+            update_source(source_id, engagement_id, {"status": "extracted", "extracted_count": 0})
+            return {"source_id": source_id, "engagement_id": engagement_id, "extracted": 0, "message": "No raw content to extract."}
         update_source(source_id, engagement_id, {"status": "processing"})
-        # TODO: call LLM to extract requirements; create requirements with source_id; set status=extracted, extracted_count=N
-        update_source(source_id, engagement_id, {"status": "extracted", "extracted_count": 0})
-        return {"source_id": source_id, "engagement_id": engagement_id, "extracted": 0, "message": "Extract stub; no requirements created."}
+        created_count = 0
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                provider = get_provider()
+                result = provider.complete(_SOURCE_EXTRACT_SYSTEM, raw[:30000], max_tokens=1024, model=MODEL_HAIKU)
+                raw_text = result.get("content", "[]")
+                json_match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+                if json_match:
+                    extracted = json.loads(json_match.group())
+                    valid_tags = {"pain_point", "manual_step", "secret_sauce", "workaround", "hand_off"}
+                    for item in extracted:
+                        tags = [t for t in (item.get("tags") or []) if t in valid_tags]
+                        create_requirement(
+                            engagement_id=engagement_id,
+                            title=item.get("title", "Untitled"),
+                            description=item.get("description", ""),
+                            source_type=src.get("source_type") or "document",
+                            tags=tags,
+                            business_process=item.get("business_process") or None,
+                            priority=item.get("priority") or "Must-Have",
+                            source_id=source_id,
+                            source_excerpt=item.get("source_excerpt") or None,
+                            extraction_confidence=0.85,
+                            hitl_state="ai_draft",
+                        )
+                        created_count += 1
+            except Exception as e:
+                logger.warning("Source extract LLM failed: %s", e)
+                update_source(source_id, engagement_id, {"status": "uploaded", "extracted_count": 0})
+                raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
+        update_source(source_id, engagement_id, {"status": "extracted", "extracted_count": created_count})
+        return {"source_id": source_id, "engagement_id": engagement_id, "extracted": created_count}
     except HTTPException:
         raise
     except Exception as e:
