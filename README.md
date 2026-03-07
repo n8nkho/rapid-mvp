@@ -50,7 +50,21 @@ Application fails to start if required variables are missing. See `.env.example`
 
 Production: deploy to Railway (or similar). Set env vars in the platform; restrict CORS to your frontend origin(s).
 
-**After first deploy:** Run `POST /v1/admin/migrate` once (send header `X-Admin-Key: <value>` if `ADMIN_API_KEY` is set) to create or update tables and client columns. Otherwise client pre-fill and extended client fields may fail to persist.
+**Deploy and run migration (one command):**
+
+```bash
+# Option A: Railway CLI (recommended). Install: npm i -g @railway/cli && railway link
+ADMIN_API_KEY=your-admin-key ./scripts/deploy_and_migrate.sh
+
+# Option B: Deploy via git push, then wait + migrate
+git push origin main
+SKIP_DEPLOY=1 ADMIN_API_KEY=your-admin-key ./scripts/deploy_and_migrate.sh
+
+# Option C: Only run migration (after deploy is already live)
+ADMIN_API_KEY=your-admin-key ./scripts/post_deploy.sh
+```
+
+Optional: put `ADMIN_API_KEY` and `API_URL` in a `.env` file in the repo root (do not commit); the scripts will load them. See **docs/DEPLOY_AND_MIGRATE.md** for full steps.
 
 ## CI
 

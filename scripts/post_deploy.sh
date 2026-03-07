@@ -19,9 +19,8 @@ if [ -z "$ADMIN_KEY" ]; then
   echo "Skipping migrate; running smoke checks only."
 else
   echo "Running migrate..."
-  # /v1 routes require X-API-Key when API_KEY env is set on server; migrate also requires X-Admin-Key
+  # Migrate uses admin router: only X-Admin-Key required (no X-API-Key).
   CURL_HEADERS=(-H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json")
-  [ -n "$API_KEY" ] && CURL_HEADERS+=(-H "X-API-Key: $API_KEY")
   HTTP=$(curl -s -o /tmp/migrate.json -w "%{http_code}" -X POST "$BASE/v1/admin/migrate" "${CURL_HEADERS[@]}")
   if [ "$HTTP" != "200" ]; then
     echo "Migrate returned HTTP $HTTP: $(cat /tmp/migrate.json)"

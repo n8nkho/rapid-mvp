@@ -52,7 +52,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - Claude Haiku for gap analysis (cost efficient)
 
 ## Key commands
-Backend deploy: cd ~/Documents/rapid-mvp && railway up
+Backend deploy + migrate: cd ~/Documents/rapid-mvp && ADMIN_API_KEY=<key> ./scripts/deploy_and_migrate.sh  (or railway up then ./scripts/post_deploy.sh)
 Frontend deploy: cd ~/Documents/rapid-ui && npx vercel --prod --force
 Run Claude Code: cd ~/Documents/rapid-mvp && claude
 Test backend: curl https://rapid-mvp-production.up.railway.app/health
