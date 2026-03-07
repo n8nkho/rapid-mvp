@@ -19,7 +19,7 @@ Controlled by env: `CORS_ORIGINS` (comma-separated). If unset, defaults to https
 Client, Engagement, Requirement, Conversation, ProcessStep
 
 ## Client (extended)
-- Standard: name, industry, employees, legal_entities, current_systems, systems_to_keep, systems_to_replace, countries, regulatory_environment
+- Standard: name, industry, employees, legal_entities, address, current_systems, systems_to_keep, systems_to_replace, countries, regulatory_environment
 - Strategy/context (pre-fill from website): business_strategy, goals (array), key_products (array), value_proposition, senior_executives (array of {name, title}), direct_competitors (array), substitutes (array)
 - **Prefill:** `POST /v1/clients/prefill-from-website` body `{ "url": "https://..." }` — fetches page, LLM extracts profile JSON to pre-populate Create Client form.
 - **DB:** If adding new columns, run in Supabase SQL: `ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_strategy text;` (and goals, key_products, value_proposition, senior_executives jsonb, direct_competitors jsonb, substitutes jsonb).
