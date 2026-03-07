@@ -262,11 +262,18 @@ Example:
 | Engagement | “Working in” pill is easy to miss           | Add engagement name to page title or breadcrumb | Nice-to-have |
 | Create Client | No hint that website pre-fill exists   | Short inline tip above the form                 | Must-have  |
 
+### Implemented (from review feedback)
+
+- **Document title:** Browser tab title includes current engagement (e.g. "Client · ENG-001 · Phoenix Discovery – RAPID") when an engagement is set, improving wayfinding.
+- **Change engagement:** Requirements and Fit/Gap pages show "Working in this engagement. Change engagement" in the main content with a link to the engagement list.
+- **Create Client pre-fill hint:** Short tip above the Create Client form: "Paste a company website URL in Ask Eng Manager or in the Pre-fill from company website box below to auto-fill many fields."
+- **HITL report:** GET /v1/engagement/{id}/hitl-report returns Excel; the HITL page has a "Download HITL report (Excel)" button.
+
 ---
 
 ## 7. Document Info
 
-- **Version:** 1.0 (standalone review spec).
+- **Version:** 1.1 (standalone review spec; post-review UX improvements: document title, Change engagement link, pre-fill hint, HITL report).
 - **Generated for:** Third-party review and UX improvement feedback.
 - **Not part of:** In-repo system design or architecture docs; for external use only.
 - **Live system:** Frontend https://rapid-ui-wine.vercel.app — Backend https://rapid-mvp-production.up.railway.app
