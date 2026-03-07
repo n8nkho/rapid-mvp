@@ -108,7 +108,7 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 | `/clients` | Clients & Engagements | **Two columns:** Create Client (left), Create Engagement (right). **Ask Eng Manager** at top of each column: paste company URL to auto pre-fill the form from website, or ask for help per field; when the agent summarizes a client record, use **Apply to form** to copy values into the form. Pre-fill from website (LLM fills name, industry, sub_industry, employees, locations, revenue, systems, countries, regulatory, strategy, goals, products, executives, competitors, sector_archetype, erp_maturity, complexity_drivers). Download Excel templates. Auto-save after create. Clients list; All Engagements table. |
 | `/clients/[id]` | Client detail | Client info; list of engagements; link to engagement detail. |
 | `/engagement` | Engagement dashboard | Load engagement by ID; quick links (RACI, Gap Analysis, RICEFW, Import/Export); stats (Total Requirements, Confirmed, Pending Sign-off, Analysed, With KPI) — **clickable** to filter requirements table; requirement filters (status, priority); sortable requirements table; HITL simulation; RICEFW tab (#ricefw); Process Mirror, KPI Summary, Seed synthetic. |
-| `/engagement/[id]` | Engagement detail | Name, phase, status; client link; Benchmark insights; Business case (KPIs, TCO, benefits); Requirements list with Full Detail expand; action tiles: Capture, RACI, Gap Analysis, Simulate, Platform backlog, Business case; Audit trail; Assets link per requirement. |
+| `/engagement/[id]` | Engagement detail | **Workspace tab nav** (Overview, Client context, Completion, Benchmark, Business case, Audit, Requirements, Fit/Gap, RICEFW, HITL, Assets, Agent). **Client context** read-only panel (Client 360 slice when client_id set). Name, phase, status; client link (hyperlinked); Benchmark insights; Business case; Requirements list with Full Detail; action tiles; Audit trail. |
 | `/engagement/import-export` | Import/Export | Engagement selector; Download Excel, Download template, Upload Excel. |
 | `/capture` | Requirements capture | Engagement selector; tabs: Conversation, Single Requirement, Paste Transcript, Use Template; assets; link to “View process flow”. |
 | `/flow` | Process flow | Engagement selector; Generate Flow; swimlane view of requirements; “Capture requirements” link. |
@@ -268,12 +268,15 @@ Example:
 - **Change engagement:** Requirements and Fit/Gap pages show "Working in this engagement. Change engagement" in the main content with a link to the engagement list.
 - **Create Client pre-fill hint:** Short tip above the Create Client form: "Paste a company website URL in Ask Eng Manager or in the Pre-fill from company website box below to auto-fill many fields."
 - **HITL report:** GET /v1/engagement/{id}/hitl-report returns Excel; the HITL page has a "Download HITL report (Excel)" button.
+- **Client context (engagement workspace):** On engagement detail (`/engagement/[id]`), a read-only "Client context" section shows a Client 360 slice (name, industry, sector, employees, legal entities, countries, current systems, regulatory, strategy/value proposition, ERP maturity) with link to full client. Fetched when engagement has a client_id.
+- **Hyperlinked IDs:** Engagement ID is clickable (EngagementLabel links to `/engagement/[id]`). Client ID is clickable via ClientIdLink (engagement detail and client detail). Requirement IDs remain linked via ReqIdLink to workflow.
+- **Engagement workspace tabs:** Sticky tab bar on engagement detail: Overview, Client context, Completion, Benchmark, Business case, Audit, Requirements (scroll to section); Fit/Gap, RICEFW, HITL, Assets, Agent (links to respective pages with engagement_id). Section IDs and scroll-margin for smooth jump.
 
 ---
 
 ## 7. Document Info
 
-- **Version:** 1.1 (standalone review spec; post-review UX improvements: document title, Change engagement link, pre-fill hint, HITL report).
+- **Version:** 1.2 (standalone review spec; added Client context, hyperlinked IDs, engagement workspace tab nav).
 - **Generated for:** Third-party review and UX improvement feedback.
 - **Not part of:** In-repo system design or architecture docs; for external use only.
 - **Live system:** Frontend https://rapid-ui-wine.vercel.app — Backend https://rapid-mvp-production.up.railway.app
