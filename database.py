@@ -359,13 +359,14 @@ def delete_client(client_id: str) -> bool:
 
 
 def get_engagement_with_client(engagement_id: str) -> dict:
-    """Return engagement dict merged with its client as a 'client' key."""
+    """Return engagement dict merged with its client as a 'client' key and client_name at top level."""
     eng = get_engagement(engagement_id)
     if not eng:
         return None
     client_id = eng.get("client_id")
     client = get_client(client_id) if client_id else {}
-    return {**eng, "client": client or {}}
+    client_name = (client or {}).get("name") if client else None
+    return {**eng, "client": client or {}, "client_name": client_name}
 
 
 # ── Sources (enterprise multi-source capture) ───────────────────────────────────

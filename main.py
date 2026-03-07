@@ -311,6 +311,7 @@ class ClientCreate(BaseModel):
     industry: Optional[str] = None
     employees: Optional[int] = None
     legal_entities: Optional[int] = None
+    address: Optional[str] = None
     current_systems: Optional[List[str]] = None
     systems_to_keep: Optional[List[str]] = None
     systems_to_replace: Optional[List[str]] = None
@@ -821,7 +822,7 @@ def prefill_client_from_website(body: ClientPrefillFromWebsiteRequest):
         raise HTTPException(status_code=500, detail="Failed to extract company data from page")
     # Normalize keys to match ClientCreate; drop unknown keys
     allowed = {
-        "name", "industry", "sub_industry", "employees", "legal_entities", "locations", "annual_revenue",
+        "name", "industry", "sub_industry", "employees", "legal_entities", "address", "locations", "annual_revenue",
         "current_systems", "countries", "regulatory_environment", "business_strategy", "goals", "key_products",
         "value_proposition", "senior_executives", "direct_competitors", "substitutes",
         "sector_archetype", "erp_maturity", "complexity_drivers",
@@ -846,6 +847,7 @@ class ClientUpdate(BaseModel):
     industry: Optional[str] = None
     employees: Optional[int] = None
     legal_entities: Optional[int] = None
+    address: Optional[str] = None
     current_systems: Optional[List[str]] = None
     systems_to_keep: Optional[List[str]] = None
     systems_to_replace: Optional[List[str]] = None
@@ -917,8 +919,21 @@ def post_engagement(body: EngagementCreate):
 
 @router.get("/engagements")
 def list_all_engagements(client_id: Optional[str] = None):
+    """List engagements, each enriched with client_name for display."""
     try:
-        return {"engagements": list_engagements(client_id)}
+        rows = list_engagements(client_id)
+        out = []
+        for eng in rows:
+            cid = eng.get("client_id")
+            client_name = None
+            if cid:
+                try:
+                    client = get_client(cid)
+                    client_name = (client or {}).get("name")
+                except Exception:
+                    pass
+            out.append({**eng, "client_name": client_name})
+        return {"engagements": out}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1881,6 +1896,61 @@ def get_engagement_summary(engagement_id: str):
         "total_analysed": by_status.get("analysed", 0),
         "gap_results_summary": gap_results_summary,
     }
+
+
+class AskRapidRequest(BaseModel):
+    question: str
+
+
+_ASK_RAPID_SYSTEM = """You are the RAPID assistant for an SAP S/4HANA implementation workspace.
+Answer the user's question using ONLY the engagement context provided below. Be concise and actionable (3–6 bullet points when suggesting next steps).
+If the answer is not in the context or you are unsure, say: "I don't have enough information to answer that from the engagement data."
+Then suggest the user speak to the relevant human role (e.g. Engagement Manager for scope and client questions, Solution Architect for fit/gap and RICEFW, Process Owner for sign-off).
+Do not invent data. Stay within the workspace scope."""
+
+
+@router.post("/engagement/{engagement_id}/ask-rapid")
+def ask_rapid(engagement_id: str, body: AskRapidRequest):
+    """Context-sensitive Ask RAPID: load engagement, client, requirements, fit-gap summary; answer from context or direct user to human role."""
+    ctx = get_engagement_with_client(engagement_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    client = ctx.get("client") or {}
+    requirements = get_requirements_by_engagement(engagement_id) or []
+    assessments = get_fit_gap_by_engagement(engagement_id) or []
+    try:
+        ricefw_items = get_ricefw_by_engagement(engagement_id) or []
+    except Exception:
+        ricefw_items = []
+    # Build context string
+    parts = [
+        f"Engagement: {ctx.get('name') or engagement_id} (ID: {engagement_id})",
+        f"Phase: {ctx.get('phase') or 'N/A'}, Status: {ctx.get('status') or 'N/A'}",
+        f"Client: {client.get('name') or client.get('client_id') or 'N/A'}",
+        f"Industry: {client.get('industry') or 'N/A'}, Sector: {client.get('sector_archetype') or client.get('industry') or 'N/A'}",
+        f"Requirements count: {len(requirements)}",
+        f"Fit/Gap assessments: {len(assessments)}",
+        f"RICEFW items: {len(ricefw_items)}",
+    ]
+    if requirements:
+        parts.append("Sample requirement titles (first 15):")
+        for r in requirements[:15]:
+            parts.append(f"  - {r.get('title') or r.get('req_id')}")
+    if assessments:
+        by_fit = {}
+        for a in assessments:
+            ft = a.get("fit_type") or "unknown"
+            by_fit[ft] = by_fit.get(ft, 0) + 1
+        parts.append("Fit/Gap breakdown: " + ", ".join(f"{k}: {v}" for k, v in sorted(by_fit.items())))
+    context_text = "\n".join(parts)
+    user_prompt = f"Context:\n{context_text}\n\nUser question: {body.question}"
+    try:
+        provider = get_provider()
+        result = provider.complete(_ASK_RAPID_SYSTEM, user_prompt, max_tokens=600, model=MODEL_HAIKU)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
+    content = (result.get("content") or "").strip()
+    return {"reply": content}
 
 
 @router.get("/engagement/{engagement_id}/benchmark-hints")
@@ -4544,6 +4614,7 @@ def post_testing_run(request: Request, body: TestingRunRequest):
                 all_issues.append(i)
 
     # Optionally push issues to platform_issues (use engagement_id or placeholder)
+    pushed_count = 0
     eng_for_backlog = engagement_id or "_test_run"
     if push_to_backlog and all_issues:
         for issue in all_issues:
@@ -4561,6 +4632,7 @@ def post_testing_run(request: Request, body: TestingRunRequest):
                         "actual_behavior": issue.get("actual_behavior"),
                     },
                 })
+                pushed_count += 1
             except Exception:
                 pass
 
@@ -4575,6 +4647,7 @@ def post_testing_run(request: Request, body: TestingRunRequest):
             "failed": total_failed,
             "total_checks": total_passed + total_failed,
             "issues_count": len(all_issues),
+            "pushed_to_backlog_count": pushed_count,
         },
         "issues": all_issues,
     }
@@ -4638,6 +4711,7 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS sector_archetype text;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS complexity_drivers jsonb;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS erp_maturity text;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS benchmark_opt_in boolean DEFAULT true;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS address text;
 """
 
 _BENCHMARK_HINTS_DDL = """
