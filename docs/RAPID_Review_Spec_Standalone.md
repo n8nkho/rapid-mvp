@@ -60,12 +60,12 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 - **Base path:** All data/action routes under `/v1` (e.g. `/v1/clients`, `/v1/engagement/{id}/fit-gap-board`).
 - **Auth:** Optional API key via header `X-API-Key`; admin operations use `X-Admin-Key` when `ADMIN_API_KEY` is set.
 - **Key domains:**
-  - **Clients & Engagements:** CRUD; client prefill from website (LLM); PATCH for auto-save.
+  - **Clients & Engagements:** CRUD; client prefill from website (LLM extracts many fields: name, industry, sub_industry, employees, locations, revenue, systems, countries, regulatory, strategy, goals, products, value proposition, executives, competitors, substitutes, sector_archetype, erp_maturity, complexity_drivers); PATCH for auto-save.
   - **Requirements:** CRUD; RTM Excel import/export; template download.
   - **Process steps:** CRUD per requirement; extract from transcript (LLM); BPMN generation.
   - **Fit/Gap:** Create assessment, get board, review (approve/notes), analyse-all.
   - **RICEFW:** List/add/edit/delete per engagement; generate from gaps; export Excel.
-  - **Agent team:** Agent roles (incl. A_ personas), simulate agent response, platform issues, platform backlog.
+  - **Agent team:** Agent roles (incl. A_Engagement_Manager for client/engagement setup), simulate agent response, platform issues, platform backlog. A_Engagement_Manager assists on Create Client and Create Engagement (Ask Eng Manager); when user pastes a company URL, UI can auto run pre-fill from website.
   - **Audit:** Audit trail per engagement (HITL + audit events).
 - **Engagement scope:** Every endpoint that reads/writes data filters by `engagement_id`; client data is never mixed across engagements.
 
@@ -96,7 +96,7 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 ### 3.1 Navigation & Layout
 
 - **Header:** Logo “RAPID”, “SAP Implementation”, current engagement pill (when set), global search (when engagement set), nav links, user name, logout, “AI-Powered” badge.
-- **Nav links:** Home, Clients, Engagements, Capture, Fit/Gap, Simulate, Platform backlog, Patterns, System (health).
+- **Nav links:** Home, Setup (Clients, Engagements), Discover (Capture, Sources), Analyse (Requirements, Fit/Gap, RICEFW), Govern (HITL Review, Audit Trail, Patterns), Collaborate (Agent simulation, Platform backlog), **Agent Testers** (Agent Testers), System (health).
 - **Engagement-scoped links:** When an engagement is loaded, RACI, HITL, Fit/Gap, Simulate, Platform backlog, and engagement detail links carry `engagement_id` in the URL.
 
 ### 3.2 Pages (Routes)
@@ -105,7 +105,7 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 |-------|--------|------------------|
 | `/` | Home dashboard | “What would you like to do today?” prompt (Ctrl+Enter to submit); tiles: Choose/Create client, Choose/Create engagement; table of top 5 open engagements with Reqs · RICEFW · Gaps; most recent engagement link. |
 | `/login` | Sign in | Username + password (mock); any input succeeds. |
-| `/clients` | Clients & Engagements | **Two columns:** Create Client (left), Create Engagement (right). Download Excel templates (Client, Engagement, Requirements, RICEFW). Pre-fill from website. Auto-save after create. Engagement submit disabled until client selected. Clients list (filter by name/industry, sort); All Engagements table (filter by name/status). |
+| `/clients` | Clients & Engagements | **Two columns:** Create Client (left), Create Engagement (right). **Ask Eng Manager** at top of each column: paste company URL to auto pre-fill the form from website, or ask for help per field; when the agent summarizes a client record, use **Apply to form** to copy values into the form. Pre-fill from website (LLM fills name, industry, sub_industry, employees, locations, revenue, systems, countries, regulatory, strategy, goals, products, executives, competitors, sector_archetype, erp_maturity, complexity_drivers). Download Excel templates. Auto-save after create. Clients list; All Engagements table. |
 | `/clients/[id]` | Client detail | Client info; list of engagements; link to engagement detail. |
 | `/engagement` | Engagement dashboard | Load engagement by ID; quick links (RACI, Gap Analysis, RICEFW, Import/Export); stats (Total Requirements, Confirmed, Pending Sign-off, Analysed, With KPI) — **clickable** to filter requirements table; requirement filters (status, priority); sortable requirements table; HITL simulation; RICEFW tab (#ricefw); Process Mirror, KPI Summary, Seed synthetic. |
 | `/engagement/[id]` | Engagement detail | Name, phase, status; client link; Benchmark insights; Business case (KPIs, TCO, benefits); Requirements list with Full Detail expand; action tiles: Capture, RACI, Gap Analysis, Simulate, Platform backlog, Business case; Audit trail; Assets link per requirement. |
@@ -118,6 +118,7 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 | `/workflow/[reqId]` | BPMN workflow | Back to engagement; req_id + title; BPMN vs Table view; Extract from transcript; add/edit step drawer. |
 | `/simulate` | Agent simulation | Engagement + agent role dropdowns; phase; message input; “Agent reply (draft)”. |
 | `/platform-backlog` | Platform backlog | Engagement selector; list by priority; Add issue; Start/Resolve. |
+| `/agent-testers` | Agent Testers | Lists agent roles; A_Engagement_Manager featured with manifesto (Discovery/Assessment EM); link to use on Create Client / Engagement. |
 | `/patterns` | Pattern library | GET pattern-library; grouped by category. |
 | `/system-health` | System health | Checks API, key, backend health, clients/engagements sample; links to key pages. |
 
@@ -132,7 +133,7 @@ The system consists of a **FastAPI backend** (Python, Railway), a **Next.js fron
 
 ### 3.4 Forms & Behaviour
 
-- **Create Client:** Name (required), industry, employees, legal_entities, systems, countries, regulatory, strategy fields, sector/benchmark fields. Pre-fill from URL. After create, form retained and **auto-save** (debounced PATCH).
+- **Create Client:** Name (required), industry, sub_industry, employees, legal_entities, locations, revenue, systems, countries, regulatory, strategy fields, sector/benchmark fields (sector_archetype, erp_maturity, complexity_drivers). **Ask Eng Manager** at top: paste URL to auto pre-fill (many fields), or get questions/suggestions per field; **Apply to form** copies agent summary into the form. Pre-fill from URL fills as many fields as the LLM can extract or infer. After create, form retained and **auto-save** (debounced PATCH).
 - **Create Engagement:** Client (required), name, description, phase, status, dates, project_manager, sponsor, risk_level, health. Submit disabled until client selected and at least one client exists. After create, **auto-save** (debounced PATCH).
 - **Templates:** Downloadable Excel templates for Client, Engagement, Requirements (RTM), RICEFW; note to “Save to your Documents folder to fill and re-upload”.
 

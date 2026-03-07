@@ -85,6 +85,7 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **Deploy tracking:** After pushing, track deployment (e.g. Railway) and pause until deploy succeeds before running post-deploy steps; no need to ask user permission.
 - **Deploy + migrate:** Run `ADMIN_API_KEY=<key> ./scripts/deploy_and_migrate.sh` to deploy (Railway CLI), wait for health, then run migrations and smoke checks. Migrate-only: `ADMIN_API_KEY=<key> ./scripts/post_deploy.sh`. See docs/DEPLOY_AND_MIGRATE.md.
 - **After every phase:** Update PROJECT.md and CLAUDE.md with current status / recent changes; create fallback git tag; run E2E tests.
+- **After every feature completion:** Update docs/RAPID_Review_Spec_Standalone.md with current system state (new routes, nav, UX elements, pre-fill behaviour, Agent Testers, etc.) so the standalone spec stays accurate for reviewers.
 
 ## Fit/Gap (Phase B)
 - **Table:** fit_gap_assessments (assessment_id e.g. FGA-001, req_id, engagement_id, fit_type, complexity, rationale, sap_scope_item_*, workaround_option, customisation_risk, clean_core_impact, estimated_effort_days_low/high, cost_band, confidence_score, hitl_state, reviewed_by, reviewed_at, reviewer_notes, …). Created via POST /admin/migrate or run_migrations().
@@ -113,7 +114,7 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **Sources:** create_source, list_sources_by_engagement, etc. in database.py; _SOURCES_DDL and _REQUIREMENTS_SOURCE_DDL in run_migrations.
 - **HITL:** hitl-queue, hitl-events, **hitl-report** (Excel). Frontend: /hitl.
 - **Fit/Gap:** fit_gap_assessments + endpoints. Frontend: /fitgap with sticky summary bar.
-- **RICEFW from gaps:** POST ricefw-generate. **Agent Team:** agent_roles, platform_issues, simulate, platform-backlog. **Fallback tag:** rapid-fallback-2026-03-02.
+- **RICEFW from gaps:** POST ricefw-generate. **Agent Team:** agent_roles, platform_issues, simulate, platform-backlog. **Fallback tag:** rapid-fallback-2026-03-05 (prefill expansion, Agent Testers, Ask Eng Manager, deploy_and_migrate).
 
 ## Excel export polish (Phase F)
 - **Requirements export:** GET /v1/engagement/{engagement_id}/requirements/export — first sheet "Requirements" (unchanged). When fit_gap_assessments exist for the engagement, second sheet "Fit-Gap" is added (assessment_id, req_id, fit_type, complexity, rationale, sap_scope_item_*, effort days, cost_band, confidence_score, hitl_state, reviewed_by, reviewer_notes).

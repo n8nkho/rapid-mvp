@@ -721,21 +721,28 @@ def _html_to_plain_text(html: str, max_chars: int = 35000) -> str:
 
 
 _CLIENT_PREFILL_SYSTEM = """You are extracting structured company/client profile data from website content.
+Fill as many fields as you can. Infer from context when reasonable (e.g. "global operations" -> countries; "manufacturing" or "automotive" -> industry; "500+ employees" -> employees; "listed company" -> regulatory SOX).
 Return a single JSON object with these keys only. Use null for unknown. For arrays use [] if none found.
-- name (string): company name
-- industry (string): industry sector
-- employees (number or null): employee count if mentioned
+- name (string): company name (required if visible)
+- industry (string): industry sector (e.g. Manufacturing, Financial Services, Healthcare)
+- sub_industry (string): more specific sector if mentioned (e.g. Automotive, EV, Aerospace)
+- employees (number or null): employee count; infer band if only "500+", "thousands", "global" mentioned
 - legal_entities (number or null): number of legal entities if mentioned
-- current_systems (array of strings): ERP or IT systems mentioned
-- countries (array of strings): countries of operation
-- regulatory_environment (array of strings): e.g. SOX, GDPR, HIPAA
-- business_strategy (string): brief description of business strategy
+- locations (number or null): sites, offices, or plants if mentioned
+- annual_revenue (string or null): revenue if mentioned (e.g. "$500M", "€1B")
+- current_systems (array of strings): ERP or IT systems mentioned (SAP, Oracle, legacy, etc.)
+- countries (array of strings): countries or regions of operation
+- regulatory_environment (array of strings): e.g. SOX, GDPR, HIPAA, ISO, FDA
+- business_strategy (string): brief description of business strategy or mission
 - goals (array of strings): strategic or business goals
 - key_products (array of strings): main products or services
 - value_proposition (string): value proposition or differentiator
-- senior_executives (array of objects with "name" and "title")
-- direct_competitors (array of strings): direct competitors (Porter 5 forces)
-- substitutes (array of strings): substitute products/services (Porter 5 forces)
+- senior_executives (array of objects with "name" and "title"): leadership team
+- direct_competitors (array of strings): direct competitors
+- substitutes (array of strings): substitute products/services
+- sector_archetype (string or null): e.g. Manufacturing, Retail, Professional Services
+- erp_maturity (string or null): if inferable: "Greenfield", "Legacy migration", "Hybrid", "Not assessed"
+- complexity_drivers (array of strings): e.g. Multi-country, M&A, Regulatory, High volume
 Return only the JSON object, no markdown or explanation."""
 
 
@@ -814,9 +821,10 @@ def prefill_client_from_website(body: ClientPrefillFromWebsiteRequest):
         raise HTTPException(status_code=500, detail="Failed to extract company data from page")
     # Normalize keys to match ClientCreate; drop unknown keys
     allowed = {
-        "name", "industry", "employees", "legal_entities", "current_systems", "countries",
-        "regulatory_environment", "business_strategy", "goals", "key_products", "value_proposition",
-        "senior_executives", "direct_competitors", "substitutes",
+        "name", "industry", "sub_industry", "employees", "legal_entities", "locations", "annual_revenue",
+        "current_systems", "countries", "regulatory_environment", "business_strategy", "goals", "key_products",
+        "value_proposition", "senior_executives", "direct_competitors", "substitutes",
+        "sector_archetype", "erp_maturity", "complexity_drivers",
     }
     return {k: v for k, v in data.items() if k in allowed}
 
