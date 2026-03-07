@@ -39,6 +39,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
+- 2026-03-07: **RAPID Test Agents / Testing Command Center** (from “Create a specification for building an agent or ag” PDF): fallback `rapid-fallback-2026-03-07` + **docs/RAPID_FALLBACK_2026-03-07.md**; **docs/RAPID_TEST_AGENTS_SPEC.md**; GET /v1/testing/scenarios, POST /v1/testing/run (API-level smoke/regression/import_export checks); optional push issues to platform_issues. Frontend: /testing-command-center (Environment, Scenario multi-select, Run Tests, results viewer). Nav: SYSTEM → Testing Command Center.
 - 2026-03-07: Checkpoint **docs/RAPID_CHECKPOINT_2026-03-057.md** (Prompt for new Agent 3.7.2026). PDF-driven engagement workspace: Client context on engagement detail, hyperlinked IDs (EngagementLabel, ClientIdLink), workspace tab nav; spec v1.2.
 - 2026-03-05: Enterprise Phases A–G: sources table + LLM extract; left sidebar + mission-control home; /sources two-panel + add source + extract; /requirements filters + drawer + pagination; Fit-Gap sticky summary + cost; HITL column descriptions + hitl-report Excel; completion checklist on engagement detail; onboarding wizard + empty states. Marker: **docs/RAPID_CHECKPOINT_2026-03-05.md**.
 - 2026-03-04: Audit trail, Agent Simulation, Platform Backlog; checkpoint rapid-checkpoint-2026-03-04.
