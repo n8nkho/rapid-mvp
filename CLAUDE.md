@@ -116,6 +116,7 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **Fit/Gap:** fit_gap_assessments + endpoints. Frontend: /fitgap with sticky summary bar.
 - **RICEFW from gaps:** POST ricefw-generate. **Agent Team:** agent_roles, platform_issues, simulate, platform-backlog.
 - **Testing Command Center (RAPID Test Agents spec):** GET /v1/testing/scenarios, POST /v1/testing/run (body: scenario_ids, environment, engagement_id?, push_issues_to_backlog?). Runs API-level smoke/regression/import_export checks; returns run_id, summary (passed/failed/issues_count), issues[]. Optional push to platform_issues. Spec: docs/RAPID_TEST_AGENTS_SPEC.md. **Fallback:** rapid-fallback-2026-03-07; doc: docs/RAPID_FALLBACK_2026-03-07.md.
+- **Frontend entity selectors:** rapid-ui has EngagementSelector, ClientSelector, RequirementSelector (app/components/); used on Audit, Sources, Gap Analysis, RACI, HITL, Requirements, Fit/Gap, Testing Command Center, Flow. GET /v1/engagements supports ?client_id= for filtered list.
 
 ## Excel export polish (Phase F)
 - **Requirements export:** GET /v1/engagement/{engagement_id}/requirements/export — first sheet "Requirements" (unchanged). When fit_gap_assessments exist for the engagement, second sheet "Fit-Gap" is added (assessment_id, req_id, fit_type, complexity, rationale, sap_scope_item_*, effort days, cost_band, confidence_score, hitl_state, reviewed_by, reviewer_notes).
