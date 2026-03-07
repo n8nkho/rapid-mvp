@@ -107,7 +107,7 @@ Client, Engagement, Requirement, Conversation, ProcessStep
 - **database.py:** update_client(client_id, updates), get_benchmark_hints_by_engagement(engagement_id), create_benchmark_hint(...).
 
 ## Current status / recent changes (for new agents)
-- **Checkpoint marker:** **docs/RAPID_CHECKPOINT_2026-03-05.md**. Resume with prompt in that file (or "Continue RAPID from checkpoint"). Read PROJECT.md first.
+- **Checkpoint marker:** **docs/RAPID_CHECKPOINT_2026-03-057.md**. Resume with prompt in that file (or "Continue RAPID from checkpoint"). Read PROJECT.md first.
 - **PROJECT.md** has "Current Status / Recent Changes", "Open errors to fix", and "Next improvements to continue".
 - **Open errors:** None.
 - **Enterprise upgrade (Phases A–G done):** Sources table + POST/GET/PATCH/DELETE /sources, GET /engagement/{id}/sources, POST /sources/{id}/extract (LLM); requirement columns source_id, source_excerpt, extraction_confidence; GET /engagement/{id}/completion-check; GET /engagement/{id}/hitl-report (Excel). Frontend: left sidebar, mission-control home, /sources, /requirements (filters + drawer), /audit, Fit-Gap sticky summary + cost, HITL column descriptions + download report, completion checklist on engagement detail, onboarding wizard + empty states.

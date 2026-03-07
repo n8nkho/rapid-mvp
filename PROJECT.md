@@ -11,9 +11,9 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-05 (Enterprise upgrade Phases A–G complete)
+**Last updated:** 2026-03-07 (checkpoint 2026-03-057; PDF engagement workspace)
 
-**Checkpoint tag:** `RAPID_CHECKPOINT_2026-03-05` — resume from **docs/RAPID_CHECKPOINT_2026-03-05.md**; prompt: see that file or "Continue RAPID from checkpoint".
+**Checkpoint tag:** `RAPID_CHECKPOINT_2026-03-057` — resume from **docs/RAPID_CHECKPOINT_2026-03-057.md**; prompt: see that file or "Continue RAPID from checkpoint".
 
 **WORKING:**
 - Requirements CRUD, transcript extract, archaeologist agent
@@ -39,6 +39,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
+- 2026-03-07: Checkpoint **docs/RAPID_CHECKPOINT_2026-03-057.md** (Prompt for new Agent 3.7.2026). PDF-driven engagement workspace: Client context on engagement detail, hyperlinked IDs (EngagementLabel, ClientIdLink), workspace tab nav; spec v1.2.
 - 2026-03-05: Enterprise Phases A–G: sources table + LLM extract; left sidebar + mission-control home; /sources two-panel + add source + extract; /requirements filters + drawer + pagination; Fit-Gap sticky summary + cost; HITL column descriptions + hitl-report Excel; completion checklist on engagement detail; onboarding wizard + empty states. Marker: **docs/RAPID_CHECKPOINT_2026-03-05.md**.
 - 2026-03-04: Audit trail, Agent Simulation, Platform Backlog; checkpoint rapid-checkpoint-2026-03-04.
 - Fallback tag: `rapid-fallback-2026-03-02`; phase tags rapid-fallback-phase-b through -f.
@@ -59,9 +60,9 @@ Test backend: curl https://rapid-mvp-production.up.railway.app/health
 
 ## How to continue with any AI
 1. Share PROJECT.md and CLAUDE.md (this repo); for frontend also share rapid-ui PROJECT.md and CLAUDE.md.
-2. **Short prompt:** Use the copy-paste prompt in **docs/RAPID_CHECKPOINT_2026-03-05.md** (or say: "Continue RAPID from checkpoint").
+2. **Short prompt:** Use the copy-paste prompt in **docs/RAPID_CHECKPOINT_2026-03-057.md** (or say: "Continue RAPID from checkpoint").
 3. New agent should: read PROJECT.md (Open errors + Next improvements), then CLAUDE.md; fix open errors first, then pick next improvements.
-4. Checkpoint marker: **docs/RAPID_CHECKPOINT_2026-03-05.md**.
+4. Checkpoint marker: **docs/RAPID_CHECKPOINT_2026-03-057.md**.
 
 
 ## Feature Backlog (prioritised sprints)
