@@ -80,6 +80,10 @@ from database import (
     update_platform_issue,
     create_audit_event,
     list_audit_events_by_engagement,
+    get_raci_matrix,
+    upsert_raci_matrix,
+    get_engagement_scope,
+    upsert_engagement_scope,
     retain_only_engagement,
     create_source,
     get_source,
@@ -1951,6 +1955,142 @@ def ask_rapid(engagement_id: str, body: AskRapidRequest):
         raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
     content = (result.get("content") or "").strip()
     return {"reply": content}
+
+
+# ── RACI Matrix ─────────────────────────────────────────────────────────────
+
+def _default_raci_matrix() -> list:
+    """Default RACI matrix rows: area + activities with R/A/C/I checkboxes (all false)."""
+    areas = [
+        ("Requirements discovery & capture", ["Conduct workshops", "Extract from transcripts", "Maintain repository", "Prioritise", "Link to L2/L3"]),
+        ("Gap analysis", ["Semantic match", "Review AI mappings", "Document fit/gap", "Traceability"]),
+        ("Process mirror & to-be", ["Document as-is", "Identify automation", "Design to-be", "Validate L3"]),
+        ("Sign-off and governance", ["SME approval", "Owner sign-off", "Final confirmation", "Audit trail"]),
+        ("RICEFW", ["Classify RICEFW", "Link to requirements", "Assess complexity", "Approve or cancel"]),
+    ]
+    roles = ["R", "A", "C", "I"]
+    out = []
+    for area, activities in areas:
+        for act in activities:
+            out.append({
+                "area": area,
+                "activity": act,
+                "R": False, "A": False, "C": False, "I": False,
+            })
+    return out
+
+
+@router.get("/engagement/{engagement_id}/raci")
+def get_raci(engagement_id: str):
+    """Get RACI matrix for engagement. Returns matrix, finalized, finalized_at, finalized_by, change_log."""
+    if not get_engagement(engagement_id):
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    row = get_raci_matrix(engagement_id)
+    if not row:
+        return {
+            "engagement_id": engagement_id,
+            "matrix": _default_raci_matrix(),
+            "finalized": False,
+            "finalized_at": None,
+            "finalized_by": None,
+            "change_log": [],
+        }
+    return {
+        "engagement_id": engagement_id,
+        "matrix": row.get("matrix") or _default_raci_matrix(),
+        "finalized": bool(row.get("finalized")),
+        "finalized_at": row.get("finalized_at"),
+        "finalized_by": row.get("finalized_by"),
+        "change_log": row.get("change_log") or [],
+    }
+
+
+class RaciUpdate(BaseModel):
+    matrix: Optional[List[Dict[str, Any]]] = None
+    finalize: Optional[bool] = None
+    finalized_by: Optional[str] = None
+
+
+@router.patch("/engagement/{engagement_id}/raci")
+def patch_raci(engagement_id: str, body: RaciUpdate, request: Request):
+    """Update RACI matrix or set finalized. If already finalized and matrix sent, append to change_log then update."""
+    if not get_engagement(engagement_id):
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    actor = request.headers.get("X-Actor-Id") or request.headers.get("X-Actor-Role") or "user"
+    now = datetime.now(timezone.utc).isoformat()
+    row = get_raci_matrix(engagement_id)
+    current_matrix = (row.get("matrix") or _default_raci_matrix()) if row else _default_raci_matrix()
+    finalized = bool(row.get("finalized")) if row else False
+    finalized_at = row.get("finalized_at")
+    finalized_by = row.get("finalized_by")
+    change_log = list(row.get("change_log") or []) if row else []
+
+    if body.finalize is True:
+        finalized = True
+        finalized_at = now
+        finalized_by = body.finalized_by or actor
+    if body.finalize is False:
+        finalized = False
+        finalized_at = None
+        finalized_by = None
+
+    if body.matrix is not None:
+        if finalized and row:
+            # Log before/after for each cell that changed
+            for i, new_row in enumerate(body.matrix):
+                if i >= len(current_matrix):
+                    continue
+                old_row = current_matrix[i]
+                for role in ("R", "A", "C", "I"):
+                    ov = old_row.get(role, False)
+                    nv = new_row.get(role, False)
+                    if ov != nv:
+                        change_log.append({
+                            "at": now,
+                            "by": actor,
+                            "row_index": i,
+                            "area": old_row.get("area"),
+                            "activity": old_row.get("activity"),
+                            "role": role,
+                            "before": ov,
+                            "after": nv,
+                        })
+        current_matrix = body.matrix
+
+    upsert_raci_matrix(
+        engagement_id,
+        matrix=current_matrix,
+        finalized=finalized,
+        finalized_at=finalized_at,
+        finalized_by=finalized_by,
+        change_log=change_log,
+    )
+    return get_raci(engagement_id)
+
+
+# ── Engagement scope (L1/L2/L3) ─────────────────────────────────────────────
+
+@router.get("/engagement/{engagement_id}/scope")
+def get_scope(engagement_id: str):
+    """Get scope (L1/L2/L3 business process checkmarks) for engagement."""
+    if not get_engagement(engagement_id):
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    row = get_engagement_scope(engagement_id)
+    scope = (row.get("scope") or {}) if row else {}
+    return {"engagement_id": engagement_id, "scope": scope}
+
+
+class ScopeUpdate(BaseModel):
+    scope: Dict[str, Any]
+
+
+@router.patch("/engagement/{engagement_id}/scope")
+def patch_scope(engagement_id: str, body: ScopeUpdate):
+    """Update scope for engagement."""
+    if not get_engagement(engagement_id):
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    upsert_engagement_scope(engagement_id, body.scope)
+    return get_scope(engagement_id)
 
 
 @router.get("/engagement/{engagement_id}/benchmark-hints")
@@ -4939,6 +5079,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_engagement ON audit_events (engageme
 CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events (created_at DESC);
 """
 
+_RACI_MATRIX_DDL = """
+CREATE TABLE IF NOT EXISTS raci_matrix (
+  engagement_id   text PRIMARY KEY,
+  matrix          jsonb NOT NULL DEFAULT '[]',
+  finalized       boolean NOT NULL DEFAULT false,
+  finalized_at    timestamptz,
+  finalized_by    text,
+  change_log      jsonb NOT NULL DEFAULT '[]',
+  updated_at      timestamptz DEFAULT now()
+);
+"""
+
+_ENGAGEMENT_SCOPE_DDL = """
+CREATE TABLE IF NOT EXISTS engagement_scope (
+  engagement_id   text PRIMARY KEY,
+  scope           jsonb NOT NULL DEFAULT '{}',
+  updated_at      timestamptz DEFAULT now()
+);
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -5119,6 +5279,8 @@ def run_migrations():
             cur.execute(_BENCHMARK_HINTS_DDL)
             cur.execute(_AGENT_ROLES_DDL)
             cur.execute(_AUDIT_EVENTS_DDL)
+            cur.execute(_RACI_MATRIX_DDL)
+            cur.execute(_ENGAGEMENT_SCOPE_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -5155,12 +5317,12 @@ def run_migrations():
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
     }
 
 

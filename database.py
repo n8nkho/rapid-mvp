@@ -948,6 +948,83 @@ def list_audit_events_by_engagement(engagement_id: str, limit: int = 200) -> lis
     return response.data or []
 
 
+# ── RACI Matrix (per engagement) ─────────────────────────────────────────────
+
+def get_raci_matrix(engagement_id: str) -> dict:
+    """Return raci_matrix row for engagement or None."""
+    try:
+        r = (
+            supabase.table("raci_matrix")
+            .select("*")
+            .eq("engagement_id", engagement_id)
+            .limit(1)
+            .execute()
+        )
+        return r.data[0] if r.data else None
+    except Exception:
+        return None
+
+
+def upsert_raci_matrix(
+    engagement_id: str,
+    matrix: list,
+    finalized: bool = False,
+    finalized_at: str = None,
+    finalized_by: str = None,
+    change_log: list = None,
+) -> dict:
+    """Insert or update RACI matrix for engagement."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "engagement_id": engagement_id,
+        "matrix": matrix,
+        "finalized": finalized,
+        "finalized_at": finalized_at,
+        "finalized_by": finalized_by,
+        "change_log": change_log if change_log is not None else [],
+        "updated_at": now,
+    }
+    try:
+        supabase.table("raci_matrix").upsert(record, on_conflict="engagement_id").execute()
+        return get_raci_matrix(engagement_id) or record
+    except Exception:
+        return {}
+
+
+# ── Engagement scope (L1/L2/L3 business processes) ───────────────────────────
+
+def get_engagement_scope(engagement_id: str) -> dict:
+    """Return engagement_scope row for engagement or None."""
+    try:
+        r = (
+            supabase.table("engagement_scope")
+            .select("*")
+            .eq("engagement_id", engagement_id)
+            .limit(1)
+            .execute()
+        )
+        return r.data[0] if r.data else None
+    except Exception:
+        return None
+
+
+def upsert_engagement_scope(engagement_id: str, scope: dict) -> dict:
+    """Insert or update scope for engagement."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "engagement_id": engagement_id,
+        "scope": scope,
+        "updated_at": now,
+    }
+    try:
+        supabase.table("engagement_scope").upsert(record, on_conflict="engagement_id").execute()
+        return get_engagement_scope(engagement_id) or record
+    except Exception:
+        return {}
+
+
 def retain_only_engagement(engagement_id: str) -> dict:
     """Remove all data for clients/engagements other than the given engagement.
     engagement_id is normalized (e.g. ENG016 -> ENG-016). Returns counts deleted or error."""
@@ -984,6 +1061,8 @@ def retain_only_engagement(engagement_id: str) -> dict:
         ("audit_events", "engagement_id"),
         ("benchmark_hints", "engagement_id"),
         ("feedback_events", "engagement_id"),
+        ("raci_matrix", "engagement_id"),
+        ("engagement_scope", "engagement_id"),
     ]:
         try:
             r = supabase.table(table).delete().filter(col, "in", to_delete).execute()
