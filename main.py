@@ -23,7 +23,7 @@ from auth import require_api_key
 
 validate_config()  # fail fast if required env missing
 
-from providers import get_provider, MODEL_HAIKU, MODEL_SONNET
+from providers import get_provider, MODEL_HAIKU, MODEL_SONNET, MODEL_SONNET_SEED
 from database import (
     save_gap_analysis,
     get_results_by_engagement,
@@ -510,6 +510,12 @@ class SimulateAgentRequest(BaseModel):
     phase: Optional[str] = None
     context_message: Optional[str] = None
     conversation_turn: Optional[List[Dict[str, str]]] = None
+
+
+class SeedRequirementsRequest(BaseModel):
+    engagement_id: str
+    industry: str
+    processes: List[str]
 
 
 class PlatformIssueCreate(BaseModel):
@@ -4199,7 +4205,7 @@ def get_fit_gap_board(engagement_id: str):
             summary["ai_draft"] += 1
         elif state == "approved":
             summary["approved"] += 1
-        ft = (a.get("fit_type") or "fit_standard").lower()
+        ft = (a.get("fit_type") or "fit_standard").lower().replace(" ", "_")
         if ft in fit_types_set:
             summary["fit_count"] += 1
         else:
@@ -4498,6 +4504,99 @@ def simulate_agent_response(request: Request, body: SimulateAgentRequest):
     except Exception:
         pass
     return out
+
+
+_SEED_REQUIREMENTS_SYSTEM = (
+    "You are an SAP S/4HANA requirements analyst. Generate realistic business requirements for a {industry} company "
+    "implementing SAP S/4HANA Public Cloud. Requirements should reflect real pain points and business needs specific "
+    "to the {industry} industry. Return ONLY a JSON array with no preamble or explanation."
+)
+
+
+@router.post("/simulate/seed-requirements", status_code=201)
+def seed_requirements(request: Request, body: SeedRequirementsRequest):
+    """Generate 40–60 requirements for industry/processes via Claude, insert, run fit-gap for each, set HITL ai_draft; return summary."""
+    engagement = get_engagement(body.engagement_id)
+    if not engagement:
+        raise HTTPException(status_code=404, detail=f"Engagement {body.engagement_id} not found")
+    if not body.processes:
+        raise HTTPException(status_code=400, detail="processes list cannot be empty")
+
+    system_prompt = _SEED_REQUIREMENTS_SYSTEM.format(industry=body.industry)
+    user_prompt = (
+        f"Industry: {body.industry}. Processes in scope: {', '.join(body.processes)}.\n"
+        "Generate 8–12 requirements per process. Total 40–60 requirements.\n"
+        "Return a JSON array only. Each item: {\"title\": str, \"description\": str, \"process\": str, "
+        "\"priority\": \"Must-Have\"|\"Should-Have\"|\"Could-Have\", \"category\": str}. "
+        "Use the exact priority and category strings. process must be one of the listed processes."
+    )
+    try:
+        provider = get_provider()
+        result = provider.complete(system_prompt, user_prompt, max_tokens=16000, model=MODEL_SONNET_SEED)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
+
+    raw = (result.get("content") or "").strip()
+    json_match = re.search(r"\[[\s\S]*\]", raw)
+    if not json_match:
+        raise HTTPException(status_code=500, detail="No JSON array in AI response")
+    try:
+        items = json.loads(json_match.group())
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON: {e}")
+
+    if not isinstance(items, list):
+        raise HTTPException(status_code=500, detail="AI response is not a JSON array")
+
+    requirements_created = 0
+    assessments_created = 0
+    gap_types = {"gap_ricefw", "gap_companion", "out_of_scope"}
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = (item.get("title") or "").strip() or "Untitled"
+        description = (item.get("description") or "").strip()
+        process = (item.get("process") or "").strip() or body.processes[0]
+        priority = item.get("priority") or "Must-Have"
+        if priority == "Could-Have":
+            priority = "Nice-to-Have"
+        category = (item.get("category") or "").strip() or None
+        try:
+            req = create_requirement(
+                engagement_id=body.engagement_id,
+                title=title,
+                description=description,
+                business_process=process,
+                priority=priority,
+                category=category,
+                hitl_state="ai_draft",
+            )
+        except Exception as e:
+            logger.warning("Seed: create_requirement failed for %s: %s", title[:50], e)
+            continue
+        if not req:
+            continue
+        requirements_created += 1
+        try:
+            fit_gap_assess(req["req_id"], body.engagement_id)
+            assessments_created += 1
+        except Exception as e:
+            logger.warning("Seed: fit_gap_assess failed for %s: %s", req["req_id"], e)
+        try:
+            update_requirement(req["req_id"], body.engagement_id, {"hitl_state": "ai_draft"})
+        except Exception:
+            pass
+
+    assessments = get_fit_gap_by_engagement(body.engagement_id) or []
+    gaps = sum(1 for a in assessments if (a.get("fit_type") or "").lower().replace(" ", "_") in gap_types)
+
+    return {
+        "engagement_id": body.engagement_id,
+        "requirements_created": requirements_created,
+        "assessments_created": assessments_created,
+        "gaps": gaps,
+    }
 
 
 @router.post("/platform-issues", status_code=201)

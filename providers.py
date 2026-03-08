@@ -4,6 +4,7 @@ load_dotenv()
 
 MODEL_HAIKU = "claude-haiku-4-5-20251001"
 MODEL_SONNET = "claude-sonnet-4-6"
+MODEL_SONNET_SEED = "claude-sonnet-4-20250514"
 
 class AnthropicProvider:
     def __init__(self):
