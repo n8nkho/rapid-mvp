@@ -2669,59 +2669,54 @@ async def upload_asset(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}")
 
-    content_type = _CONTENT_TYPE_MAP[ext]
-
-    # Build asset record (asset_id assigned inside create_asset via _next_asset_id)
-    asset_data: Dict[str, Any] = {
-        "engagement_id": engagement_id,
-        "file_name": file_name,
-        "file_type": ext,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if uploaded_by:
-        asset_data["uploaded_by"] = uploaded_by
-    if req_id:
-        asset_data["req_id"] = req_id
-    if process_level_2:
-        asset_data["process_level_2"] = process_level_2
-    if process_level_3:
-        asset_data["process_level_3"] = process_level_3
-
-    # Extract text for plain-text files
-    if ext == "txt":
-        try:
-            asset_data["extracted_text"] = file_bytes.decode("utf-8", errors="replace")
-        except Exception:
-            pass
-
-    # Create DB record first to get asset_id, then upload to storage
     try:
+        content_type = _CONTENT_TYPE_MAP[ext]
+
+        # Build asset record (asset_id assigned inside create_asset via _next_asset_id)
+        asset_data: Dict[str, Any] = {
+            "engagement_id": engagement_id,
+            "file_name": file_name,
+            "file_type": ext,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if uploaded_by:
+            asset_data["uploaded_by"] = uploaded_by
+        if req_id:
+            asset_data["req_id"] = req_id
+        if process_level_2:
+            asset_data["process_level_2"] = process_level_2
+        if process_level_3:
+            asset_data["process_level_3"] = process_level_3
+
+        # Extract text for plain-text files
+        if ext == "txt":
+            try:
+                asset_data["extracted_text"] = file_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        # Create DB record first to get asset_id, then upload to storage
         asset = create_asset(asset_data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create asset record: {e}")
+        if not asset:
+            raise HTTPException(status_code=500, detail="Failed to create asset record")
 
-    if not asset:
-        raise HTTPException(status_code=500, detail="Failed to create asset record")
-
-    asset_id = asset["asset_id"]
-
-    try:
+        asset_id = asset["asset_id"]
         storage_url = upload_file_to_storage(engagement_id, asset_id, file_name, file_bytes, content_type)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
+        update_asset(asset_id, {"storage_url": storage_url})
 
-    try:
-        asset = update_asset(asset_id, {"storage_url": storage_url})
+        return {
+            "asset_id": asset_id,
+            "file_name": file_name,
+            "file_type": ext,
+            "storage_url": storage_url,
+            "engagement_id": engagement_id,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save storage URL: {e}")
-
-    return {
-        "asset_id": asset_id,
-        "file_name": file_name,
-        "file_type": ext,
-        "storage_url": storage_url,
-        "engagement_id": engagement_id,
-    }
+        import traceback
+        logger.exception("Assets upload error: %s\n%s", e, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/assets")
@@ -4044,6 +4039,30 @@ def delete_ricefw(engagement_id: str, item_id: UUID):
 _FIT_GAP_TYPES = {"fit_standard", "fit_config", "fit_extension", "gap_ricefw", "gap_companion", "out_of_scope"}
 _FIT_GAP_COMPLEXITY = {"XS", "S", "M", "L", "XL"}
 
+_FIT_TYPE_MAP = {
+    "fit standard": "fit_standard",
+    "fit_to_standard": "fit_standard",
+    "fit config": "fit_config",
+    "fit configuration": "fit_config",
+    "fit extension": "fit_extension",
+    "gap ricefw": "gap_ricefw",
+    "gap - ricefw": "gap_ricefw",
+    "gap_ricefw": "gap_ricefw",
+    "gap companion": "gap_companion",
+    "gap - companion": "gap_companion",
+    "gap_companion": "gap_companion",
+    "out of scope": "out_of_scope",
+    "out_of_scope": "out_of_scope",
+}
+
+
+def _normalize_fit_type(raw: str) -> str:
+    """Normalize fit_type to canonical underscore lowercase (fit_standard, gap_ricefw, etc.)."""
+    if not raw or not isinstance(raw, str):
+        return "fit_standard"
+    key = raw.strip().lower().replace("-", "_").replace(" ", "_").replace("__", "_").strip("_")
+    return _FIT_TYPE_MAP.get(key) or (key if key in _FIT_GAP_TYPES else "fit_standard")
+
 _FIT_GAP_SYSTEM = """You are a senior SAP S/4HANA Public Cloud solution architect conducting a Fit-to-Standard assessment.
 Client context: {context}
 Be realistic and strict. Standard S/4HANA Public Cloud does NOT natively support:
@@ -4137,9 +4156,7 @@ def fit_gap_assess(req_id: str, engagement_id: str):
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"Invalid JSON: {e}")
 
-    fit_type = (data.get("fit_type") or "fit_standard").lower().replace("-", "_")
-    if fit_type not in _FIT_GAP_TYPES:
-        fit_type = "fit_standard"
+    fit_type = _normalize_fit_type(data.get("fit_type") or "fit_standard")
     complexity = (data.get("complexity") or "S").upper()
     if complexity not in _FIT_GAP_COMPLEXITY:
         complexity = "S"
@@ -4205,7 +4222,7 @@ def get_fit_gap_board(engagement_id: str):
             summary["ai_draft"] += 1
         elif state == "approved":
             summary["approved"] += 1
-        ft = (a.get("fit_type") or "fit_standard").lower().replace(" ", "_")
+        ft = _normalize_fit_type(a.get("fit_type") or "fit_standard")
         if ft in fit_types_set:
             summary["fit_count"] += 1
         else:
@@ -4251,7 +4268,7 @@ def review_fit_gap_assessment(assessment_id: str, engagement_id: str, body: FitG
     else:
         updates = {"hitl_state": "ai_draft", "reviewer_notes": body.notes}
         if body.fit_type:
-            updates["fit_type"] = body.fit_type.lower()
+            updates["fit_type"] = _normalize_fit_type(body.fit_type)
         if body.complexity:
             updates["complexity"] = body.complexity.upper()
 
@@ -4521,6 +4538,13 @@ def seed_requirements(request: Request, body: SeedRequirementsRequest):
         raise HTTPException(status_code=404, detail=f"Engagement {body.engagement_id} not found")
     if not body.processes:
         raise HTTPException(status_code=400, detail="processes list cannot be empty")
+
+    existing = get_requirements_by_engagement(body.engagement_id)
+    if len(existing) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Requirements already exist for this engagement ({len(existing)}). Delete existing requirements first or use a different engagement.",
+        )
 
     system_prompt = _SEED_REQUIREMENTS_SYSTEM.format(industry=body.industry)
     user_prompt = (
@@ -5072,6 +5096,24 @@ CREATE POLICY "public insert fga" ON fit_gap_assessments FOR INSERT WITH CHECK (
 CREATE POLICY "public update fga" ON fit_gap_assessments FOR UPDATE USING (true);
 """
 
+_ASSETS_DDL = """
+CREATE TABLE IF NOT EXISTS assets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  asset_id TEXT NOT NULL UNIQUE,
+  engagement_id TEXT NOT NULL,
+  req_id TEXT,
+  uploaded_by TEXT,
+  process_level_2 TEXT,
+  process_level_3 TEXT,
+  file_name TEXT,
+  storage_url TEXT,
+  file_type TEXT,
+  extracted_text TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_assets_engagement ON assets (engagement_id);
+"""
+
 # Reference table: user, role, engagement_id — for verifying access and future restriction
 _USER_ENGAGEMENT_ACCESS_DDL = """
 CREATE TABLE IF NOT EXISTS user_engagement_access (
@@ -5373,6 +5415,7 @@ def run_migrations():
             cur.execute(_SOURCES_DDL)
             cur.execute(_HITL_DDL)
             cur.execute(_FIT_GAP_DDL)
+            cur.execute(_ASSETS_DDL)
             cur.execute(_USER_ENGAGEMENT_ACCESS_DDL)
             cur.execute(_FEEDBACK_PATTERN_DDL)
             cur.execute(_BENCHMARK_HINTS_DDL)
@@ -5410,18 +5453,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
     }
 
 
