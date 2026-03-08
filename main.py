@@ -2738,8 +2738,8 @@ def list_assets_for_requirement(req_id: str, engagement_id: str):
 
 
 @router.patch("/assets/{asset_id}")
-def patch_asset(asset_id: UUID, body: AssetUpdate):
-    aid = str(asset_id)
+def patch_asset(asset_id: str, body: AssetUpdate):
+    aid = asset_id.strip()
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided to update")
