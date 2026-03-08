@@ -1011,6 +1011,7 @@ def get_engagement_label(engagement_id: str):
     return {
         "engagement_id": eng.get("engagement_id"),
         "name": eng.get("name") or "",
+        "client_id": eng.get("client_id") or client.get("client_id") or "",
         "client_name": client.get("name") or "",
     }
 

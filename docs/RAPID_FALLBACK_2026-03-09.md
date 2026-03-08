@@ -1,8 +1,8 @@
 # RAPID fallback marker — 2026-03-09
 
-**Tag (both repos):** `rapid-fallback-2026-03-09`
+**Tag (both repos):** `rapid-fallback-2026-03-09` (created and pushed)
 
-Use this to restore state **before** the UX & feature batch: Flow 401 fix, asset upload linked to requirement, Create requirement in capture, Client/Engagement defaults and header, stacked Create Client/Engagement tabs, responsive scaling, dashboard filter, scope L1–L3 side-by-side, requirements expand/collapse, L2/L3 in capture, display client all fields, template download/upload with agent, and related improvements.
+Use this to restore state **after** the first batch of 2026-03-09 fixes (Flow 401, asset upload, Create requirement, fallback marker). Remaining items from the full UX & feature batch: Flow 401 fix, asset upload linked to requirement, Create requirement in capture, Client/Engagement defaults and header, stacked Create Client/Engagement tabs, responsive scaling, dashboard filter, scope L1–L3 side-by-side, requirements expand/collapse, L2/L3 in capture, display client all fields, template download/upload with agent, and related improvements.
 
 ## How to restore
 
