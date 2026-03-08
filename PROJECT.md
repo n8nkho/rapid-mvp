@@ -11,7 +11,7 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-07 (checkpoint 2026-03-057; PDF engagement workspace)
+**Last updated:** 2026-03-09 (seed-requirements, fit-gap fit_type fix, frontend Seed test data + X-API-Key)
 
 **Checkpoint tag:** `RAPID_CHECKPOINT_2026-03-057` — resume from **docs/RAPID_CHECKPOINT_2026-03-057.md**; prompt: see that file or "Continue RAPID from checkpoint".
 
@@ -28,6 +28,8 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - RICEFW inventory (list, add, edit, delete, export Excel)
 - Requirements + RICEFW Excel export/import; Phase F: requirements export optional "Fit-Gap" sheet; GET /requirements/template/download
 - Feedback & pattern library, Sector & benchmarks, Agent Team & Simulation, Audit (audit_events, audit-trail)
+- **POST /v1/simulate/seed-requirements** — body: engagement_id, industry?, process_areas?; Claude Sonnet generates requirements, runs fit-gap, sets HITL ai_draft
+- **Fit-gap board:** fit_type normalized (e.g. spaces → underscores) for consistent grouping
 - Supabase: … **sources**, audit_events, etc. (run POST /admin/migrate for sources table)
 
 **OPEN ERRORS TO FIX:**
@@ -39,6 +41,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
+- 2026-03-09: **Seed requirements + fit-gap board fix (backend):** POST /v1/simulate/seed-requirements (Claude Sonnet: requirements + fit-gap + HITL ai_draft); fit-gap board normalizes fit_type with .replace(" ", "_"). **Frontend:** HITL and Assets/Capture use X-API-Key (fallback rapid-admin-2020); engagement detail shows "Seed test data" when requirements count is 0 (modal: industry + processes → POST seed-requirements, toast, refresh).
 - 2026-03-08: **RACI + Scope + User mgmt (backend):** raci_matrix table (matrix, finalized, change_log); engagement_scope table (scope jsonb); GET/PATCH engagement/{id}/raci, GET/PATCH engagement/{id}/scope. Run POST /v1/admin/migrate to create new tables.
 - 2026-03-08: **Enterprise UX batch (backend):** Client address (column + ClientCreate/ClientUpdate); engagements list and get_engagement_with_client return client_name; POST /v1/engagement/{engagement_id}/ask-rapid for context-sensitive Ask RAPID (engagement + client + requirements + fit-gap + RICEFW); fallback doc docs/RAPID_FALLBACK_2026-03-08.md; tag rapid-fallback-2026-03-08.
 - 2026-03-07: **Frontend entity dropdowns:** rapid-ui uses EngagementSelector, ClientSelector, RequirementSelector across Audit, Sources, Gap Analysis, RACI, HITL, Requirements, Fit/Gap (client filter), Testing Command Center, Flow (jump to requirement). URL sync for engagement_id. No backend changes.

@@ -14,6 +14,7 @@ Use this file if something goes wrong. A **new agent** can resume from here by r
 
 ## What’s done (since last checkpoint)
 
+- **Seed requirements + fit-gap board fix (backend):** POST /v1/simulate/seed-requirements (Claude Sonnet: requirements + fit-gap + HITL ai_draft); fit-gap board normalizes fit_type with .replace(" ", "_"). **Frontend:** HITL and Assets/Capture use X-API-Key (fallback rapid-admin-2020); engagement detail "Seed test data" when req count is 0 (modal → POST seed-requirements, toast, refresh).
 - **PDF-driven engagement workspace (from Review latest built specification):**
   - **Client context:** On `/engagement/[id]`, read-only "Client context" section (Client 360 slice) when engagement has client_id; link to full client.
   - **Hyperlinked IDs:** EngagementLabel links to `/engagement/[id]`; ClientIdLink component (engagement detail + client detail); ReqIdLink unchanged.
