@@ -2645,6 +2645,72 @@ def get_sign_off_status(engagement_id: str):
     }
 
 
+@router.post("/engagement/{engagement_id}/signoff-batch-request", status_code=200)
+def signoff_batch_request(engagement_id: str, body: dict = Body(...)):
+    """Generate a plain-English sign-off summary for selected requirements and mark them sme_approved."""
+    from fastapi import Body as _Body  # noqa: already imported at top
+    req_ids = body.get("requirement_ids", [])
+    if not req_ids:
+        raise HTTPException(status_code=400, detail="requirement_ids required")
+
+    eng = get_engagement_with_client(engagement_id)
+    client = (eng or {}).get("client") or {}
+
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    assess_by_req = {a["req_id"]: a for a in assessments}
+
+    fit_labels = {
+        "fit_standard": "SAP covers this process out of the box — no changes needed",
+        "fit_config": "SAP covers this with standard configuration",
+        "fit_extension": "SAP covers this with a supported extension (low risk)",
+        "gap_ricefw": "SAP does not cover this — custom development required (adds cost and risk)",
+        "gap_companion": "SAP does not cover this — requires a third-party solution",
+        "out_of_scope": "This item is outside the project scope",
+    }
+
+    items = []
+    for req_id in req_ids:
+        req = get_requirement_by_id(req_id, engagement_id)
+        if not req:
+            continue
+        assessment = assess_by_req.get(req_id)
+        if not assessment:
+            continue
+        fit_type = assessment.get("fit_type", "unknown")
+        plain_english = fit_labels.get(fit_type, fit_type)
+        items.append({
+            "req_id": req_id,
+            "title": req.get("title") or (req.get("description", ""))[:80],
+            "process": req.get("business_process", "General"),
+            "fit_type": fit_type,
+            "plain_english": plain_english,
+            "effort_estimate": (
+                f"{assessment.get('estimated_effort_days_low', 0)}–{assessment.get('estimated_effort_days_high', 0)} days"
+                if fit_type in ["gap_ricefw", "gap_companion"] else None
+            ),
+            "cost_band": assessment.get("cost_band") if fit_type in ["gap_ricefw", "gap_companion"] else None,
+        })
+        try:
+            update_requirement(req_id, engagement_id, {"sign_off_status": "sme_approved"})
+        except Exception:
+            pass
+
+    try:
+        create_audit_event(engagement_id, "signoff_batch_requested", entity_type="requirements",
+                           details={"count": len(items), "req_ids": req_ids})
+    except Exception:
+        pass
+
+    return {
+        "engagement_id": engagement_id,
+        "client_name": client.get("name", "Client"),
+        "items_count": len(items),
+        "items": items,
+        "message": body.get("message", ""),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ── KPI Summary ────────────────────────────────────────────────────────────────
 
 @router.get("/engagement/{engagement_id}/kpi-summary")
