@@ -4308,6 +4308,42 @@ def fit_gap_analyse_all(engagement_id: str):
     return {"engagement_id": engagement_id, "processed": created}
 
 
+@router.get("/engagement/{engagement_id}/deliverable-progress")
+def get_deliverable_progress(engagement_id: str):
+    """Return deliverable progress percentages for blueprint, RICEFW, test scripts, and go-live."""
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+
+    total_reqs = len(reqs)
+    assessed_req_ids = {a["req_id"] for a in assessments}
+    confirmed_reqs = [r for r in reqs if r.get("sign_off_status") == "confirmed"]
+
+    if total_reqs == 0:
+        blueprint_pct = 0
+    else:
+        blueprint_pct = min(100, round(((len(assessed_req_ids) * 0.6) + (len(confirmed_reqs) * 0.4)) / total_reqs * 100))
+
+    total_ricefw = len(ricefw)
+    ricefw_with_effort = [r for r in ricefw if r.get("effort_days_low") or r.get("effort_days_high")]
+    ricefw_pct = min(100, round(len(ricefw_with_effort) / total_ricefw * 100)) if total_ricefw > 0 else 0
+
+    return {
+        "engagement_id": engagement_id,
+        "blueprint_pct": blueprint_pct,
+        "ricefw_pct": ricefw_pct,
+        "test_scripts_pct": 0,
+        "go_live_pct": 0,
+        "detail": {
+            "total_requirements": total_reqs,
+            "requirements_assessed": len(assessed_req_ids),
+            "requirements_confirmed": len(confirmed_reqs),
+            "total_ricefw": total_ricefw,
+            "ricefw_with_effort": len(ricefw_with_effort),
+        },
+    }
+
+
 @router.post("/engagement/{engagement_id}/ricefw-generate", status_code=200)
 def ricefw_generate_from_gaps(engagement_id: str):
     """From approved fit_gap_assessments with fit_type=gap_ricefw, create ricefw_inventory items. Skips req_ids that already have a RICEFW item."""
