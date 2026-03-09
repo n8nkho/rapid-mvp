@@ -5819,7 +5819,7 @@ def portal_invite(body: PortalInviteRequest):
     return {
         "portal_user_id": portal_user.get("id"),
         "access_token": token,
-        "portal_url": f"/portal/{token}",
+        "portal_url": f"{os.getenv('FRONTEND_URL', 'https://rapid-ui-wine.vercel.app')}/portal/{token}",
         "expires_at": expires_at,
     }
 
@@ -6357,8 +6357,8 @@ Only return the JSON array, no other text."""
 
     provider = get_provider()
     llm_result = provider.complete(
-        prompt=prompt,
-        system="You are an SAP go-live readiness expert. Generate practical, actionable checklist items.",
+        "You are an SAP go-live readiness expert. Generate practical, actionable checklist items.",
+        prompt,
         max_tokens=2000,
         model=MODEL_HAIKU,
     )
@@ -6787,6 +6787,7 @@ CREATE TABLE IF NOT EXISTS portal_users (
 );
 CREATE INDEX IF NOT EXISTS idx_portal_users_token ON portal_users (access_token);
 CREATE INDEX IF NOT EXISTS idx_portal_users_engagement ON portal_users (engagement_id);
+ALTER TABLE portal_users DISABLE ROW LEVEL SECURITY;
 """
 
 _GO_LIVE_CHECKLIST_DDL = """

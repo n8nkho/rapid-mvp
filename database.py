@@ -1160,15 +1160,23 @@ def create_portal_user(engagement_id: str, client_id: str, name: str, email: str
 
 
 def get_portal_user_by_token(token: str) -> dict:
-    response = (
-        supabase.table("portal_users")
-        .select("*")
-        .eq("access_token", token)
-        .limit(1)
-        .execute()
-    )
-    data = response.data or []
-    return data[0] if data else None
+    import logging as _logging
+    _log = _logging.getLogger("rapid")
+    try:
+        response = (
+            supabase.table("portal_users")
+            .select("*")
+            .eq("access_token", token)
+            .limit(1)
+            .execute()
+        )
+        data = response.data or []
+        if not data:
+            _log.warning("portal_token_lookup_empty: token_prefix=%s (check RLS on portal_users or verify token stored correctly)", token[:8])
+        return data[0] if data else None
+    except Exception as exc:
+        _log.error("portal_token_lookup_error: %s", exc)
+        return None
 
 
 def update_portal_user_last_access(portal_user_id: str) -> None:
