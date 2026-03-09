@@ -1219,6 +1219,53 @@ def update_go_live_checklist_item(item_id: str, updates: dict) -> dict:
     return response.data[0] if response.data else {}
 
 
+# ── Agent Action Queue ────────────────────────────────────────────────────────
+
+def create_queue_item(engagement_id: str, action_type: str, payload: dict,
+                      risk_level: str, status: str, confidence: float | None = None,
+                      source: str | None = None) -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "action_type": action_type,
+        "payload": payload,
+        "risk_level": risk_level,
+        "status": status,
+        "confidence": confidence,
+        "source": source,
+    }
+    if status == "auto_executed":
+        record["executed_at"] = datetime.now(timezone.utc).isoformat()
+    response = supabase.table("agent_action_queue").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_queue_items(engagement_id: str, status: str | None = None) -> list:
+    q = supabase.table("agent_action_queue").select("*").eq("engagement_id", engagement_id)
+    if status:
+        q = q.eq("status", status)
+    return (q.order("created_at", desc=True).execute().data or [])
+
+
+def update_queue_item_status(item_id: str, status: str, reviewed_by: str | None = None) -> dict:
+    update = {"status": status}
+    if reviewed_by:
+        update["reviewed_by"] = reviewed_by
+    if status in ("approved", "rejected"):
+        update["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    if status in ("approved", "auto_executed"):
+        update["executed_at"] = datetime.now(timezone.utc).isoformat()
+    response = supabase.table("agent_action_queue").update(update).eq("id", item_id).execute()
+    return response.data[0] if response.data else {}
+
+
+def update_engagement_mode(engagement_id: str, mode: str, autonomy_config: dict | None = None) -> dict:
+    update: dict = {"mode": mode}
+    if autonomy_config is not None:
+        update["autonomy_config"] = autonomy_config
+    response = supabase.table("engagements").update(update).eq("engagement_id", engagement_id).execute()
+    return response.data[0] if response.data else {}
+
+
 # ── Pattern Library Create ────────────────────────────────────────────────────
 
 def create_pattern(name: str, category: str, content: str, industry_tag: str = None) -> dict:

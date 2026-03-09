@@ -101,7 +101,12 @@ from database import (
     get_go_live_checklist,
     update_go_live_checklist_item,
     create_pattern,
+    create_queue_item,
+    get_queue_items,
+    update_queue_item_status,
+    update_engagement_mode,
 )
+from autonomy import should_auto_execute, get_effective_config
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
 # Structured logging; config validated in lifespan
@@ -1128,6 +1133,10 @@ def post_requirement(body: RequirementCreate):
         raise HTTPException(status_code=500, detail=str(e))
     if not req:
         raise HTTPException(status_code=500, detail="Failed to create requirement")
+    # Engagement mode: queue fit-gap run
+    _queue_or_execute(engagement_id, "run_fitgap",
+        {"req_id": req.get("req_id"), "description": description},
+        source="requirement_capture")
     return req
 
 @router.get("/requirements", response_model=List[RequirementResponse])
@@ -1652,6 +1661,12 @@ def hitl_advance(req_id: str, engagement_id: str, body: HitlAdvanceRequest):
         raise HTTPException(status_code=500, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail=f"{req_id} not found for engagement {engagement_id}")
+    # Engagement mode: queue HITL advance for high-confidence items
+    req_confidence = (updated or {}).get("confidence_score") or req.get("confidence_score")
+    if req_confidence is not None:
+        _queue_or_execute(engagement_id, "advance_hitl_high",
+            {"req_id": req_id, "target_state": new_state, "current_state": current},
+            confidence=float(req_confidence), source="hitl_evaluator")
     return updated
 
 
@@ -4328,6 +4343,12 @@ def fit_gap_assess(req_id: str, engagement_id: str):
     # Attach requirement summary for frontend
     assessment["requirement_title"] = req.get("title")
     assessment["requirement_business_process"] = req.get("business_process")
+    # Engagement mode: queue RICEFW generation for gaps
+    fit_type_val = record.get("fit_type", "")
+    if fit_type_val in ("gap_ricefw", "gap_companion"):
+        _queue_or_execute(engagement_id, "generate_ricefw",
+            {"req_id": req_id, "fit_type": fit_type_val, "gap_description": req.get("description", "")},
+            source="fitgap_result")
     return assessment
 
 
@@ -5789,6 +5810,25 @@ def _get_portal_user_or_401(token: str) -> dict:
     return portal_user
 
 
+def _queue_or_execute(engagement_id: str, action_type: str, payload: dict,
+                      confidence: float | None = None, source: str | None = None) -> bool:
+    """Queue action for review or auto-execute based on engagement mode. Returns True if auto-executed."""
+    try:
+        eng = get_engagement(engagement_id)
+        if not eng:
+            return False
+        auto = should_auto_execute(eng, action_type, confidence)
+        from autonomy import RISK_LEVELS
+        risk = RISK_LEVELS.get(action_type, "high")
+        status = "auto_executed" if auto else "pending"
+        create_queue_item(engagement_id, action_type, payload, risk, status, confidence, source)
+        logger.info("action_queue: %s %s engagement=%s", status, action_type, engagement_id)
+        return auto
+    except Exception as exc:
+        logger.error("action_queue_error: %s", exc)
+        return False
+
+
 _PORTAL_FIT_LABELS = {
     "fit_standard": "SAP covers this process out of the box — no changes needed",
     "fit_config": "SAP covers this with standard configuration",
@@ -6423,6 +6463,61 @@ def patch_go_live_checklist_item(item_id: str, body: GoLiveChecklistUpdateReques
     return update_go_live_checklist_item(item_id, updates)
 
 
+# ── Engagement Mode: Action Queue endpoints ───────────────────────────────────
+
+class SetEngagementModeRequest(BaseModel):
+    mode: str
+    autonomy_config: Optional[dict] = None
+
+@router.patch("/engagement/{engagement_id}/mode")
+def set_engagement_mode(engagement_id: str, body: SetEngagementModeRequest):
+    """Update engagement mode (guided/collaborative/autonomous) and optional config overrides."""
+    if body.mode not in ("guided", "collaborative", "autonomous"):
+        raise HTTPException(status_code=400, detail="mode must be guided, collaborative, or autonomous")
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    updated = update_engagement_mode(engagement_id, body.mode, body.autonomy_config)
+    return {"engagement_id": engagement_id, "mode": body.mode,
+            "autonomy_config": body.autonomy_config or {}}
+
+@router.get("/engagement/{engagement_id}/action-queue")
+def list_action_queue(engagement_id: str, status: Optional[str] = None):
+    """Return agent action queue for an engagement. Filter by status=pending|approved|rejected|auto_executed."""
+    items = get_queue_items(engagement_id, status)
+    pending_count = len([i for i in items if i.get("status") == "pending"])
+    return {"engagement_id": engagement_id, "total": len(items),
+            "pending": pending_count, "items": items}
+
+@router.post("/engagement/{engagement_id}/action-queue/{item_id}/approve")
+def approve_queue_item(engagement_id: str, item_id: str):
+    """Approve a pending action queue item (mark as approved/executed)."""
+    updated = update_queue_item_status(item_id, "approved")
+    if not updated:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    return updated
+
+@router.post("/engagement/{engagement_id}/action-queue/{item_id}/reject")
+def reject_queue_item(engagement_id: str, item_id: str):
+    """Reject/skip a pending action queue item."""
+    updated = update_queue_item_status(item_id, "rejected")
+    if not updated:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    return updated
+
+@router.post("/engagement/{engagement_id}/action-queue/approve-all")
+def approve_all_queue_items(engagement_id: str):
+    """Bulk approve all pending low-risk items for an engagement."""
+    items = get_queue_items(engagement_id, "pending")
+    low_risk = [i for i in items if i.get("risk_level") == "low"]
+    approved = []
+    for item in low_risk:
+        result = update_queue_item_status(item["id"], "approved")
+        if result:
+            approved.append(result)
+    return {"approved": len(approved), "items": approved}
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
@@ -6506,6 +6601,9 @@ ALTER TABLE engagements ADD COLUMN IF NOT EXISTS project_manager text;
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS sponsor text;
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS risk_level text;
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS health text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'collaborative'
+  CHECK (mode IN ('guided', 'collaborative', 'autonomous'));
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS autonomy_config jsonb NOT NULL DEFAULT '{}';
 """
 
 _REQUIREMENTS_EXTRA_DDL = """
@@ -6819,6 +6917,26 @@ _PATTERN_LIBRARY_EXTRA_DDL = """
 ALTER TABLE pattern_library ADD COLUMN IF NOT EXISTS industry_tag text;
 """
 
+_AGENT_ACTION_QUEUE_DDL = """
+CREATE TABLE IF NOT EXISTS agent_action_queue (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    engagement_id text NOT NULL,
+    action_type text NOT NULL,
+    payload jsonb NOT NULL DEFAULT '{}',
+    risk_level text NOT NULL DEFAULT 'low'
+      CHECK (risk_level IN ('low', 'medium', 'high')),
+    confidence float,
+    status text NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'approved', 'rejected', 'auto_executed', 'skipped')),
+    source text,
+    reviewed_by text,
+    reviewed_at timestamptz,
+    executed_at timestamptz,
+    created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_action_queue_engagement ON agent_action_queue (engagement_id, status);
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -7008,6 +7126,7 @@ def run_migrations():
             cur.execute(_PORTAL_USERS_DDL)
             cur.execute(_GO_LIVE_CHECKLIST_DDL)
             cur.execute(_PATTERN_LIBRARY_EXTRA_DDL)
+            cur.execute(_AGENT_ACTION_QUEUE_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -7038,7 +7157,7 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts, portal_users, go_live_checklist, pattern_library_extra ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts, portal_users, go_live_checklist, pattern_library_extra, agent_action_queue ensured"}
         except Exception as e:
             _all_ddl = (
                 _PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL
@@ -7047,6 +7166,7 @@ def run_migrations():
                 + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL
                 + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
                 + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
+                + _AGENT_ACTION_QUEUE_DDL
             ).strip()
             return {
                 "status": "manual_required",
@@ -7061,6 +7181,7 @@ def run_migrations():
         + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL
         + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
         + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
+        + _AGENT_ACTION_QUEUE_DDL
     ).strip()
     return {
         "status": "manual_required",
