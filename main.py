@@ -194,6 +194,8 @@ async def add_request_id(request: Request, call_next):
 
 # v1 API: all routes under /v1; optional API key when API_KEY env is set
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
+# Public portal routes: no API key — authenticated by portal token only
+portal_router = APIRouter(prefix="/v1")
 # Admin routes: no API key required; only X-Admin-Key (or query admin_key) when ADMIN_API_KEY is set
 admin_router = APIRouter(prefix="/v1")
 
@@ -5824,7 +5826,7 @@ def portal_invite(body: PortalInviteRequest):
     }
 
 
-@router.get("/portal/auth/{token}")
+@portal_router.get("/portal/auth/{token}")
 def portal_auth(token: str):
     """Validate a portal token. Returns user info + valid:true, or 401."""
     portal_user = get_portal_user_by_token(token)
@@ -5849,7 +5851,7 @@ def portal_auth(token: str):
     }
 
 
-@router.get("/portal/{token}/overview")
+@portal_router.get("/portal/{token}/overview")
 def portal_overview(token: str):
     """Return engagement overview for the client portal: health, progress, decisions."""
     portal_user = _get_portal_user_or_401(token)
@@ -5926,7 +5928,7 @@ def portal_overview(token: str):
     }
 
 
-@router.get("/portal/{token}/signoffs")
+@portal_router.get("/portal/{token}/signoffs")
 def portal_signoffs(token: str):
     """Return requirements needing client sign-off, with plain-English fit descriptions."""
     portal_user = _get_portal_user_or_401(token)
@@ -5954,7 +5956,7 @@ def portal_signoffs(token: str):
     return {"engagement_id": engagement_id, "pending_signoffs": len(items), "items": items}
 
 
-@router.post("/portal/{token}/signoffs/{req_id}/approve")
+@portal_router.post("/portal/{token}/signoffs/{req_id}/approve")
 def portal_approve_signoff(token: str, req_id: str):
     """Client approves a requirement — sets sign_off_status=confirmed and audits the event."""
     portal_user = _get_portal_user_or_401(token)
@@ -5979,7 +5981,7 @@ def portal_approve_signoff(token: str, req_id: str):
     return updated
 
 
-@router.post("/portal/{token}/signoffs/{req_id}/query")
+@portal_router.post("/portal/{token}/signoffs/{req_id}/query")
 def portal_query_signoff(token: str, req_id: str, body: PortalSignoffQueryRequest):
     """Client raises a question about a requirement — stored as a HITL client_query event."""
     portal_user = _get_portal_user_or_401(token)
@@ -6012,7 +6014,7 @@ def portal_query_signoff(token: str, req_id: str, body: PortalSignoffQueryReques
     return {"status": "question_received", "req_id": req_id}
 
 
-@router.get("/portal/{token}/decisions")
+@portal_router.get("/portal/{token}/decisions")
 def portal_decisions(token: str):
     """Return all confirmed requirements as a decisions log."""
     portal_user = _get_portal_user_or_401(token)
@@ -6037,7 +6039,7 @@ def portal_decisions(token: str):
     return {"engagement_id": engagement_id, "total": len(items), "decisions": items}
 
 
-@router.get("/portal/{token}/timeline")
+@portal_router.get("/portal/{token}/timeline")
 def portal_timeline(token: str):
     """Return milestone timeline for client view."""
     portal_user = _get_portal_user_or_401(token)
@@ -7060,4 +7062,5 @@ def run_migrations():
 
 
 app.include_router(admin_router)
+app.include_router(portal_router)
 app.include_router(router)
