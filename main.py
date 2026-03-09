@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, File, Form, UploadFile, Request, Header, Depends, Path
+from fastapi import FastAPI, APIRouter, HTTPException, File, Form, UploadFile, Request, Header, Depends, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -2648,7 +2648,6 @@ def get_sign_off_status(engagement_id: str):
 @router.post("/engagement/{engagement_id}/signoff-batch-request", status_code=200)
 def signoff_batch_request(engagement_id: str, body: dict = Body(...)):
     """Generate a plain-English sign-off summary for selected requirements and mark them sme_approved."""
-    from fastapi import Body as _Body  # noqa: already imported at top
     req_ids = body.get("requirement_ids", [])
     if not req_ids:
         raise HTTPException(status_code=400, detail="requirement_ids required")
