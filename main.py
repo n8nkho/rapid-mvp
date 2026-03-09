@@ -4965,6 +4965,72 @@ def post_testing_run(request: Request, body: TestingRunRequest):
     }
 
 
+@router.get("/command-center/alerts")
+def get_command_center_alerts():
+    """Scan all engagements and return prioritized action items for the command center."""
+    try:
+        engagements = list_engagements()
+    except Exception:
+        engagements = []
+    alerts = []
+
+    for eng in engagements:
+        eng_id = eng["engagement_id"]
+        eng_name = eng.get("name", eng_id)
+        client_name = eng.get("client_name", "")
+
+        # Check HITL queue
+        try:
+            hitl_events = list_hitl_events(eng_id)
+            pending_hitl = [e for e in hitl_events if e.get("hitl_state") == "ai_draft"]
+            if pending_hitl:
+                alerts.append({
+                    "engagement_id": eng_id, "engagement_name": eng_name, "client_name": client_name,
+                    "type": "hitl_queue", "urgency": "high" if len(pending_hitl) >= 5 else "medium",
+                    "title": f"{len(pending_hitl)} decisions pending review",
+                    "description": f"{len(pending_hitl)} requirements awaiting consultant judgment",
+                    "action_label": "Review Decisions", "action_url": f"/hitl?engagement_id={eng_id}",
+                })
+        except Exception:
+            pass
+
+        # Check sign-off completeness
+        try:
+            reqs = get_requirements_by_engagement(eng_id)
+            if reqs:
+                unconfirmed = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+                pct = round((len(reqs) - len(unconfirmed)) / len(reqs) * 100)
+                if unconfirmed and pct < 50:
+                    alerts.append({
+                        "engagement_id": eng_id, "engagement_name": eng_name, "client_name": client_name,
+                        "type": "signoff_pending", "urgency": "medium",
+                        "title": f"{len(unconfirmed)} requirements without sign-off",
+                        "description": f"{pct}% of requirements confirmed",
+                        "action_label": "View Requirements", "action_url": f"/requirements?engagement_id={eng_id}",
+                    })
+        except Exception:
+            pass
+
+        # Check RICEFW missing estimates
+        try:
+            ricefw = get_ricefw_by_engagement(eng_id)
+            missing = [r for r in ricefw if not r.get("effort_days_low") and not r.get("effort_days_high")]
+            if missing:
+                alerts.append({
+                    "engagement_id": eng_id, "engagement_name": eng_name, "client_name": client_name,
+                    "type": "ricefw_estimates_missing", "urgency": "low",
+                    "title": f"{len(missing)} RICEFW items missing effort estimates",
+                    "description": "Estimates needed for project budget",
+                    "action_label": "Update RICEFW", "action_url": f"/engagement/{eng_id}",
+                })
+        except Exception:
+            pass
+
+    urgency_order = {"high": 0, "medium": 1, "low": 2}
+    alerts.sort(key=lambda x: urgency_order.get(x["urgency"], 3))
+    return {"alerts": alerts, "total": len(alerts)}
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
