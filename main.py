@@ -90,6 +90,9 @@ from database import (
     list_sources_by_engagement,
     update_source,
     delete_source,
+    create_test_script,
+    list_test_scripts_by_engagement,
+    list_test_scripts_by_ricefw,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -2479,6 +2482,49 @@ def post_source_extract(source_id: str, engagement_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sources/{source_id}/upload-file")
+async def upload_source_file(
+    source_id: str,
+    engagement_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a PDF, DOCX, or TXT file and extract its text into sources.content."""
+    file_ext = (file.filename or "").lower().rsplit(".", 1)[-1]
+    if file_ext not in ("pdf", "docx", "txt"):
+        raise HTTPException(status_code=400, detail="Unsupported file type. Use .pdf, .docx, or .txt")
+    src = get_source(source_id, engagement_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="Source not found")
+    file_bytes = await file.read()
+    file_size = len(file_bytes)
+    text = ""
+    try:
+        if file_ext == "pdf":
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        elif file_ext == "docx":
+            from docx import Document as DocxDocument
+            doc = DocxDocument(io.BytesIO(file_bytes))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        else:
+            text = file_bytes.decode("utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to extract text from file: {e}")
+    update_source(source_id, engagement_id, {
+        "content": text,
+        "raw_content": text,
+        "file_name": file.filename,
+        "file_size": file_size,
+        "status": "ready_for_extraction",
+    })
+    return {
+        "source_id": source_id,
+        "extracted_text_length": len(text),
+        "status": "ready_for_extraction",
+    }
 
 
 # ── Analyse All ───────────────────────────────────────────────────────────────

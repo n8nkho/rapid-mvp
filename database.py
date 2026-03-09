@@ -453,6 +453,36 @@ def delete_source(source_id: str, engagement_id: str) -> bool:
     return bool(response.data)
 
 
+# ── Test Scripts ────────────────────────────────────────────────────────────────
+
+def create_test_script(data: dict) -> dict:
+    response = supabase.table("test_scripts").insert(data).execute()
+    return response.data[0] if response.data else {}
+
+
+def list_test_scripts_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("test_scripts")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def list_test_scripts_by_ricefw(engagement_id: str, ricefw_id: str) -> list:
+    response = (
+        supabase.table("test_scripts")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .eq("ricefw_id", ricefw_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
 # ── Assets ────────────────────────────────────────────────────────────────────
 
 def _next_asset_id(engagement_id: str) -> str:
