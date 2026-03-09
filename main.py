@@ -4146,6 +4146,17 @@ def fit_gap_assess(req_id: str, engagement_id: str):
         category=req.get("category") or "",
         top_matches=top_matches_str,
     )
+    # Pattern library pre-check: find pattern whose title shares >=2 words with requirement title
+    try:
+        all_patterns = get_pattern_library(limit=100)
+        req_title_words = set(w for w in req.get("title", "").lower().split() if len(w) > 2)
+        for pat in all_patterns:
+            pat_title_words = set(w for w in (pat.get("name") or "").lower().split() if len(w) > 2)
+            if len(req_title_words & pat_title_words) >= 2:
+                user_prompt += f"\nRelevant past resolution from similar project: {pat.get('name')} — {(pat.get('content') or '')[:150]}"
+                break
+    except Exception:
+        pass
     system_prompt = _FIT_GAP_SYSTEM.format(context=context)
     patterns = _get_top_patterns_text(limit=5)
     if patterns:
