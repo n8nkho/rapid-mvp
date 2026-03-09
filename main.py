@@ -4471,6 +4471,82 @@ def ricefw_generate_from_gaps(engagement_id: str):
     }
 
 
+@router.post("/engagement/{engagement_id}/ricefw-estimate-all", status_code=200)
+def ricefw_estimate_all(engagement_id: str):
+    """Run the estimator on all RICEFW items missing effort_days_low/high."""
+    ricefw_items = get_ricefw_by_engagement(engagement_id)
+    items_to_estimate = [r for r in ricefw_items if not r.get("effort_days_low") and not r.get("effort_days_high")]
+
+    if not items_to_estimate:
+        return {"message": "All RICEFW items already have estimates", "processed": 0}
+
+    patterns = get_pattern_library(limit=100)
+    eng = get_engagement_with_client(engagement_id)
+    client = (eng or {}).get("client") or {}
+    industry = client.get("industry", "General")
+
+    results = []
+    for item in items_to_estimate:
+        item_type = item.get("type", "E")
+        item_name = item.get("name", "")
+        item_desc = item.get("description", "")
+
+        pattern_hint = ""
+        for p in patterns:
+            p_words = set((p.get("name") or "").lower().split())
+            i_words = set(item_name.lower().split())
+            if len(p_words & i_words) >= 2:
+                pattern_hint = f"Similar past item: {p.get('name')} — {str(p.get('content', ''))[:150]}"
+                break
+
+        type_labels = {
+            "R": "Report", "I": "Interface/Integration", "C": "Data Conversion",
+            "E": "Enhancement/Custom Code", "F": "Form/Output", "W": "Workflow/Approval",
+            "A": "Analytics/Dashboard",
+        }
+        type_label = type_labels.get(item_type, item_type)
+
+        prompt = f"""You are an SAP project estimator. Estimate effort for this custom development item.
+
+Item Type: {type_label}
+Name: {item_name}
+Description: {item_desc}
+Industry: {industry}
+{pattern_hint}
+
+Return JSON only:
+{{"effort_days_low": <integer, realistic minimum person-days>, "effort_days_high": <integer, realistic maximum person-days>, "complexity": "Simple|Medium|Complex|Very Complex", "rationale": "1 sentence explaining the estimate", "priority": "Critical|High|Medium|Low"}}
+
+Typical ranges: Simple=1-3d, Medium=3-8d, Complex=8-20d, Very Complex=20-50d"""
+
+        try:
+            result = get_provider().complete(
+                model=MODEL_HAIKU,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are an SAP estimator. Return valid JSON only.",
+                max_tokens=200,
+            )
+            raw = result["content"].strip()
+            # strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            data = json.loads(raw)
+            update_ricefw_item(item["id"], engagement_id, {
+                "effort_days_low": data.get("effort_days_low"),
+                "effort_days_high": data.get("effort_days_high"),
+                "priority": data.get("priority"),
+            })
+            results.append({"id": item["id"], "name": item_name, "status": "estimated",
+                            "low": data.get("effort_days_low"), "high": data.get("effort_days_high")})
+        except Exception as e:
+            logger.warning(f"RICEFW estimate failed for {item['id']}: {e}")
+            results.append({"id": item["id"], "name": item_name, "status": "failed"})
+
+    return {"processed": len(results), "results": results}
+
+
 # ── Phase D: Feedback & Pattern Library ───────────────────────────────────────
 
 def _get_top_patterns_text(limit: int = 5) -> str:
