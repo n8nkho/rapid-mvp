@@ -10,11 +10,12 @@ import json
 import logging
 import os
 import re
+import secrets
 import uuid
 from uuid import UUID
 import psycopg2
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from openpyxl import Workbook, load_workbook
 
 # Import config and validate env before any DB or providers
@@ -93,6 +94,13 @@ from database import (
     create_test_script,
     list_test_scripts_by_engagement,
     list_test_scripts_by_ricefw,
+    create_portal_user,
+    get_portal_user_by_token,
+    update_portal_user_last_access,
+    create_go_live_checklist_item,
+    get_go_live_checklist,
+    update_go_live_checklist_item,
+    create_pattern,
 )
 from scope_items import SCOPE_ITEMS, get_catalogue_text
 
@@ -4459,18 +4467,25 @@ def get_deliverable_progress(engagement_id: str):
     ricefw_with_effort = [r for r in ricefw if r.get("effort_days_low") or r.get("effort_days_high")]
     ricefw_pct = min(100, round(len(ricefw_with_effort) / total_ricefw * 100)) if total_ricefw > 0 else 0
 
+    checklist = get_go_live_checklist(engagement_id)
+    total_checklist = len(checklist)
+    completed_checklist = len([i for i in checklist if i.get("status") == "completed"])
+    go_live_pct = round(completed_checklist / total_checklist * 100) if total_checklist > 0 else 0
+
     return {
         "engagement_id": engagement_id,
         "blueprint_pct": blueprint_pct,
         "ricefw_pct": ricefw_pct,
         "test_scripts_pct": 0,
-        "go_live_pct": 0,
+        "go_live_pct": go_live_pct,
         "detail": {
             "total_requirements": total_reqs,
             "requirements_assessed": len(assessed_req_ids),
             "requirements_confirmed": len(confirmed_reqs),
             "total_ricefw": total_ricefw,
             "ricefw_with_effort": len(ricefw_with_effort),
+            "checklist_total": total_checklist,
+            "checklist_completed": completed_checklist,
         },
     }
 
@@ -5731,6 +5746,673 @@ Write in professional consulting style. No markdown."""
     )
 
 
+# ── Client Portal: Pydantic models ───────────────────────────────────────────
+
+class PortalInviteRequest(BaseModel):
+    engagement_id: str
+    client_id: str
+    name: str
+    email: str
+    role: Optional[str] = "client_executive"
+
+class PortalSignoffQueryRequest(BaseModel):
+    message: str
+
+class SteerCoReportRequest(BaseModel):
+    since_date: str
+    format: Optional[str] = "json"  # "json" or "docx"
+
+class GoLiveChecklistUpdateRequest(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    owner: Optional[str] = None
+
+
+# ── Client Portal: helper ─────────────────────────────────────────────────────
+
+def _get_portal_user_or_401(token: str) -> dict:
+    """Validate portal token and update last_access. Raises 401 if invalid/expired."""
+    portal_user = get_portal_user_by_token(token)
+    if not portal_user:
+        raise HTTPException(status_code=401, detail="Invalid or expired portal token")
+    expires = portal_user.get("token_expires_at")
+    if expires:
+        try:
+            expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if expires_dt < datetime.now(timezone.utc):
+                raise HTTPException(status_code=401, detail="Portal token has expired")
+        except (ValueError, TypeError):
+            pass
+    update_portal_user_last_access(portal_user["id"])
+    return portal_user
+
+
+_PORTAL_FIT_LABELS = {
+    "fit_standard": "SAP covers this process out of the box — no changes needed",
+    "fit_config": "SAP covers this with standard configuration",
+    "fit_extension": "SAP covers this with a supported extension (low risk)",
+    "gap_ricefw": "SAP does not cover this — custom development required (adds cost and risk)",
+    "gap_companion": "SAP does not cover this — requires a third-party solution",
+    "out_of_scope": "This item is outside the project scope",
+}
+
+
+# ── Client Portal: endpoints (ITEM 1) ────────────────────────────────────────
+
+@router.post("/portal/invite", status_code=201)
+def portal_invite(body: PortalInviteRequest):
+    """Create a portal user with a magic access token (30-day expiry). Returns portal_url."""
+    eng = get_engagement(body.engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {body.engagement_id} not found")
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    portal_user = create_portal_user(
+        engagement_id=body.engagement_id,
+        client_id=body.client_id,
+        name=body.name,
+        email=body.email,
+        role=body.role or "client_executive",
+        access_token=token,
+        token_expires_at=expires_at,
+    )
+    return {
+        "portal_user_id": portal_user.get("id"),
+        "access_token": token,
+        "portal_url": f"/portal/{token}",
+        "expires_at": expires_at,
+    }
+
+
+@router.get("/portal/auth/{token}")
+def portal_auth(token: str):
+    """Validate a portal token. Returns user info + valid:true, or 401."""
+    portal_user = get_portal_user_by_token(token)
+    if not portal_user:
+        raise HTTPException(status_code=401, detail="Invalid or expired portal token")
+    expires = portal_user.get("token_expires_at")
+    if expires:
+        try:
+            expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if expires_dt < datetime.now(timezone.utc):
+                raise HTTPException(status_code=401, detail="Portal token has expired")
+        except (ValueError, TypeError):
+            pass
+    update_portal_user_last_access(portal_user["id"])
+    return {
+        "portal_user_id": portal_user.get("id"),
+        "engagement_id": portal_user.get("engagement_id"),
+        "client_id": portal_user.get("client_id"),
+        "name": portal_user.get("name"),
+        "role": portal_user.get("role"),
+        "valid": True,
+    }
+
+
+@router.get("/portal/{token}/overview")
+def portal_overview(token: str):
+    """Return engagement overview for the client portal: health, progress, decisions."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    eng = get_engagement_with_client(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    client = get_client(portal_user["client_id"])
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+
+    total_reqs = len(reqs)
+    assessed_req_ids = {a["req_id"] for a in assessments}
+    confirmed_reqs = [r for r in reqs if r.get("sign_off_status") == "confirmed"]
+    if total_reqs == 0:
+        blueprint_pct = 0
+    else:
+        blueprint_pct = min(100, round(((len(assessed_req_ids) * 0.6) + (len(confirmed_reqs) * 0.4)) / total_reqs * 100))
+    total_ricefw = len(ricefw)
+    ricefw_pct = min(100, round(len([r for r in ricefw if r.get("effort_days_low") or r.get("effort_days_high")]) / total_ricefw * 100)) if total_ricefw > 0 else 0
+
+    pending_signoffs = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+    recent_decisions = sorted(
+        confirmed_reqs,
+        key=lambda r: r.get("updated_at") or r.get("created_at") or "",
+        reverse=True,
+    )[:5]
+
+    go_live = eng.get("go_live_date")
+    days_to_go_live = None
+    if go_live:
+        try:
+            gl_dt = datetime.fromisoformat(str(go_live).replace("Z", "+00:00"))
+            days_to_go_live = (gl_dt.date() - datetime.now(timezone.utc).date()).days
+        except (ValueError, TypeError):
+            pass
+    stale_hitl = [r for r in reqs if r.get("hitl_state") == "ai_draft"]
+    if blueprint_pct < 30 or (days_to_go_live is not None and days_to_go_live < 30 and blueprint_pct < 70):
+        rag = "red"
+    elif blueprint_pct < 60 or len(stale_hitl) > 0:
+        rag = "amber"
+    else:
+        rag = "green"
+
+    phase = eng.get("phase") or "explore_realize"
+    phase_order = ["discover_prepare", "explore_realize", "deploy_run"]
+    try:
+        current_idx = phase_order.index(phase)
+    except ValueError:
+        current_idx = 1
+    milestone_summary = []
+    for i, name in enumerate(["Discovery & Prepare", "Explore & Realize", "Deploy & Run"]):
+        if i < current_idx:
+            status = "complete"
+        elif i == current_idx:
+            status = "current"
+        else:
+            status = "upcoming"
+        milestone_summary.append({"name": name, "status": status})
+
+    return {
+        "engagement": {"name": eng.get("name"), "go_live_date": go_live, "phase": phase},
+        "client": {"name": (client or {}).get("name") or eng.get("client_name")},
+        "project_health": rag,
+        "progress": {"blueprint_pct": blueprint_pct, "ricefw_pct": ricefw_pct},
+        "pending_signoffs": len(pending_signoffs),
+        "recent_decisions": [
+            {"req_id": r.get("req_id"), "title": r.get("title"), "confirmed_at": r.get("updated_at")}
+            for r in recent_decisions
+        ],
+        "milestone_summary": milestone_summary,
+        "days_to_go_live": days_to_go_live,
+    }
+
+
+@router.get("/portal/{token}/signoffs")
+def portal_signoffs(token: str):
+    """Return requirements needing client sign-off, with plain-English fit descriptions."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    assessment_map = {a["req_id"]: a for a in assessments}
+    pending = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+    items = []
+    for r in pending:
+        a = assessment_map.get(r.get("req_id")) or {}
+        ft = (a.get("fit_type") or r.get("fit_type") or "").lower().replace(" ", "_")
+        effort = ""
+        if a.get("estimated_effort_days_low") and a.get("estimated_effort_days_high"):
+            effort = f"{a['estimated_effort_days_low']}–{a['estimated_effort_days_high']} days"
+        items.append({
+            "req_id": r.get("req_id"),
+            "title": r.get("title"),
+            "process_area": r.get("business_process"),
+            "fit_type": ft,
+            "plain_english_description": _PORTAL_FIT_LABELS.get(ft, ft),
+            "effort_estimate": effort,
+            "sign_off_status": r.get("sign_off_status"),
+        })
+    return {"engagement_id": engagement_id, "pending_signoffs": len(items), "items": items}
+
+
+@router.post("/portal/{token}/signoffs/{req_id}/approve")
+def portal_approve_signoff(token: str, req_id: str):
+    """Client approves a requirement — sets sign_off_status=confirmed and audits the event."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    req = get_requirement_by_id(req_id, engagement_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=f"Requirement {req_id} not found")
+    updated = update_requirement(req_id, {
+        "sign_off_status": "confirmed",
+        "sign_off_by": portal_user.get("name"),
+        "sign_off_at": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        create_audit_event(
+            engagement_id, "client_signoff_approved",
+            entity_type="requirement", entity_id=req_id,
+            actor_role=portal_user.get("role"),
+            details={"portal_user": portal_user.get("name")},
+        )
+    except Exception:
+        pass
+    return updated
+
+
+@router.post("/portal/{token}/signoffs/{req_id}/query")
+def portal_query_signoff(token: str, req_id: str, body: PortalSignoffQueryRequest):
+    """Client raises a question about a requirement — stored as a HITL client_query event."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    req = get_requirement_by_id(req_id, engagement_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=f"Requirement {req_id} not found")
+    message = body.message
+    try:
+        create_hitl_event({
+            "engagement_id": engagement_id,
+            "req_id": req_id,
+            "from_state": req.get("hitl_state") or "ai_draft",
+            "to_state": "client_query",
+            "actor": portal_user.get("name") or "portal",
+            "actor_role": portal_user.get("role"),
+            "notes": message,
+        })
+    except Exception:
+        pass
+    try:
+        create_audit_event(
+            engagement_id, "client_query_raised",
+            entity_type="requirement", entity_id=req_id,
+            actor_role=portal_user.get("role"),
+            details={"message": message[:500]},
+        )
+    except Exception:
+        pass
+    return {"status": "question_received", "req_id": req_id}
+
+
+@router.get("/portal/{token}/decisions")
+def portal_decisions(token: str):
+    """Return all confirmed requirements as a decisions log."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    assessment_map = {a["req_id"]: a for a in assessments}
+    confirmed = [r for r in reqs if r.get("sign_off_status") == "confirmed"]
+    items = []
+    for r in sorted(confirmed, key=lambda x: x.get("updated_at") or "", reverse=True):
+        a = assessment_map.get(r.get("req_id")) or {}
+        ft = (a.get("fit_type") or r.get("fit_type") or "").lower().replace(" ", "_")
+        items.append({
+            "req_id": r.get("req_id"),
+            "title": r.get("title"),
+            "process_area": r.get("business_process"),
+            "fit_type": ft,
+            "plain_english": _PORTAL_FIT_LABELS.get(ft, ft),
+            "confirmed_at": r.get("updated_at"),
+            "sign_off_by": r.get("sign_off_by"),
+        })
+    return {"engagement_id": engagement_id, "total": len(items), "decisions": items}
+
+
+@router.get("/portal/{token}/timeline")
+def portal_timeline(token: str):
+    """Return milestone timeline for client view."""
+    portal_user = _get_portal_user_or_401(token)
+    engagement_id = portal_user["engagement_id"]
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    phase = eng.get("phase") or "explore_realize"
+    phase_order = ["discover_prepare", "explore_realize", "deploy_run"]
+    phase_names = {
+        "discover_prepare": "Discovery & Prepare",
+        "explore_realize": "Explore & Realize",
+        "deploy_run": "Deploy & Run",
+    }
+    phase_descs = {
+        "discover_prepare": "Initial workshops and requirements gathering",
+        "explore_realize": "Fit-to-standard assessment and gap resolution",
+        "deploy_run": "Build, test, and go-live",
+    }
+    try:
+        current_idx = phase_order.index(phase)
+    except ValueError:
+        current_idx = 1
+    phases = []
+    for i, key in enumerate(phase_order):
+        if i < current_idx:
+            status = "complete"
+        elif i == current_idx:
+            status = "current"
+        else:
+            status = "upcoming"
+        phases.append({"name": phase_names[key], "status": status, "description": phase_descs[key]})
+
+    go_live = eng.get("go_live_date")
+    days_to_go_live = None
+    if go_live:
+        try:
+            gl_dt = datetime.fromisoformat(str(go_live).replace("Z", "+00:00"))
+            days_to_go_live = (gl_dt.date() - datetime.now(timezone.utc).date()).days
+        except (ValueError, TypeError):
+            pass
+    return {"phases": phases, "go_live_date": go_live, "days_to_go_live": days_to_go_live}
+
+
+# ── SteerCo Report Generator (ITEM 2) ────────────────────────────────────────
+
+@router.post("/engagement/{engagement_id}/steerco-report")
+def generate_steerco_report(engagement_id: str, body: SteerCoReportRequest):
+    """Generate a Steering Committee report with RAG status, metrics, and LLM narrative."""
+    eng = get_engagement_with_client(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    client = get_client(eng.get("client_id", ""))
+    try:
+        since_dt = datetime.fromisoformat(body.since_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid since_date format. Use YYYY-MM-DD.")
+
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+    audit_events = list_audit_events_by_engagement(engagement_id)
+
+    since = body.since_date
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    new_reqs = [r for r in reqs if (r.get("created_at") or "") >= since]
+    confirmed_since = [
+        r for r in reqs
+        if r.get("sign_off_status") == "confirmed" and (r.get("updated_at") or r.get("created_at") or "") >= since
+    ]
+    new_assessments = [a for a in assessments if (a.get("created_at") or "") >= since]
+
+    total_reqs = len(reqs)
+    assessed_req_ids = {a["req_id"] for a in assessments}
+    confirmed_reqs = [r for r in reqs if r.get("sign_off_status") == "confirmed"]
+    pending_reqs = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+    if total_reqs == 0:
+        blueprint_pct = 0
+    else:
+        blueprint_pct = min(100, round(((len(assessed_req_ids) * 0.6) + (len(confirmed_reqs) * 0.4)) / total_reqs * 100))
+    total_ricefw = len(ricefw)
+    ricefw_pct = min(100, round(len([r for r in ricefw if r.get("effort_days_low") or r.get("effort_days_high")]) / total_ricefw * 100)) if total_ricefw > 0 else 0
+
+    go_live = eng.get("go_live_date")
+    days_to_go_live = None
+    if go_live:
+        try:
+            gl_dt = datetime.fromisoformat(str(go_live).replace("Z", "+00:00"))
+            days_to_go_live = (gl_dt.date() - datetime.now(timezone.utc).date()).days
+        except (ValueError, TypeError):
+            pass
+
+    high_risk = [a for a in assessments if (a.get("customisation_risk") or "") in ("high", "very_high") or a.get("fit_type") == "gap_ricefw"]
+    stale_hitl = [r for r in reqs if r.get("hitl_state") == "ai_draft" and (r.get("updated_at") or "") < (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()]
+
+    if blueprint_pct < 30 or (days_to_go_live is not None and days_to_go_live < 30 and blueprint_pct < 70):
+        rag = "RED"
+    elif blueprint_pct < 60 or len(stale_hitl) > 0:
+        rag = "AMBER"
+    else:
+        rag = "GREEN"
+
+    client_name = (client or {}).get("name") or eng.get("client_name") or "Client"
+    confirmed_list = "\n".join(f"- {r.get('title', r.get('req_id'))}" for r in confirmed_since[:10]) or "None"
+    pending_list = "\n".join(f"- {r.get('title', r.get('req_id'))}" for r in pending_reqs[:10]) or "None"
+    risk_list = "\n".join(f"- {a.get('req_id')}: {(a.get('rationale') or '')[:100]}" for a in high_risk[:5]) or "None"
+
+    prompt = f"""Write a steering committee update for {client_name}. Period: {since} to {today}.
+Progress this period: {len(new_reqs)} requirements added, {len(new_assessments)} assessed, {len(confirmed_since)} confirmed by client.
+Overall: Blueprint {blueprint_pct}%, RICEFW {ricefw_pct}%.
+RAG Status: {rag}.
+Key decisions made:
+{confirmed_list}
+Pending decisions:
+{pending_list}
+Risks:
+{risk_list}
+Write in 4 sections: Summary (2 sentences), Progress This Period (bullet points), Decisions Required (numbered list), Next Steps (3-5 bullets). Professional tone. No jargon."""
+
+    provider = get_provider()
+    llm_result = provider.complete(prompt=prompt, system="You are an expert SAP programme manager writing SteerCo communications.", max_tokens=1500, model=MODEL_SONNET)
+    narrative = (llm_result.get("content") or "").strip()
+
+    # Parse sections
+    sections: dict = {}
+    current_section = None
+    for line in narrative.split("\n"):
+        line_lower = line.lower().strip()
+        if "summary" in line_lower and len(line) < 60 and not any(c in line_lower for c in ["progress", "decision", "next"]):
+            current_section = "summary"
+            sections.setdefault(current_section, [])
+        elif "progress this period" in line_lower or ("progress" in line_lower and "period" in line_lower):
+            current_section = "progress"
+            sections.setdefault(current_section, [])
+        elif "decisions required" in line_lower or ("decision" in line_lower and "required" in line_lower):
+            current_section = "decisions_required"
+            sections.setdefault(current_section, [])
+        elif "next steps" in line_lower:
+            current_section = "next_steps"
+            sections.setdefault(current_section, [])
+        elif current_section and line.strip():
+            sections[current_section] = sections.get(current_section, []) + [line.strip()]
+
+    structured = {
+        "engagement_id": engagement_id,
+        "client": client_name,
+        "period": {"from": since, "to": today},
+        "rag_status": rag,
+        "blueprint_pct": blueprint_pct,
+        "ricefw_pct": ricefw_pct,
+        "days_to_go_live": days_to_go_live,
+        "stats": {
+            "requirements_added": len(new_reqs),
+            "requirements_assessed": len(new_assessments),
+            "requirements_confirmed": len(confirmed_since),
+            "total_requirements": total_reqs,
+            "total_ricefw": total_ricefw,
+            "high_risk_items": len(high_risk),
+        },
+        "narrative": narrative,
+        "sections": {
+            "summary": "\n".join(sections.get("summary", [])),
+            "progress": sections.get("progress", []),
+            "decisions_required": sections.get("decisions_required", []),
+            "next_steps": sections.get("next_steps", []),
+        },
+    }
+
+    if body.format == "docx":
+        from docx import Document as DocxDocument
+        doc = DocxDocument()
+        doc.add_heading(f"Steering Committee Report — {client_name}", 0)
+        doc.add_paragraph(f"Period: {since} to {today}  |  RAG: {rag}  |  Blueprint: {blueprint_pct}%  |  RICEFW: {ricefw_pct}%")
+        doc.add_paragraph(f"Days to Go-Live: {days_to_go_live or 'TBD'}")
+        for section_title, content in [
+            ("1. Summary", structured["sections"]["summary"]),
+            ("2. Progress This Period", "\n".join(structured["sections"]["progress"])),
+            ("3. Decisions Required", "\n".join(structured["sections"]["decisions_required"])),
+            ("4. Next Steps", "\n".join(structured["sections"]["next_steps"])),
+        ]:
+            doc.add_heading(section_title, level=1)
+            doc.add_paragraph(content if isinstance(content, str) else "\n".join(content or []))
+        doc.add_heading("5. Metrics", level=1)
+        tbl = doc.add_table(rows=1, cols=2)
+        tbl.style = "Table Grid"
+        hdr = tbl.rows[0].cells
+        hdr[0].text = "Metric"
+        hdr[1].text = "Value"
+        for k, v in [
+            ("Requirements Added", len(new_reqs)),
+            ("Assessments Completed", len(new_assessments)),
+            ("Client Sign-offs Received", len(confirmed_since)),
+            ("Total Requirements", total_reqs),
+            ("RICEFW Items", total_ricefw),
+            ("High Risk Items", len(high_risk)),
+        ]:
+            row = tbl.add_row().cells
+            row[0].text = str(k)
+            row[1].text = str(v)
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        eng_name_safe = (eng.get("name") or "engagement").replace(" ", "_")[:30]
+        filename = f"SteerCo_{eng_name_safe}_{today.replace('-', '')}.docx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    return structured
+
+
+# ── Memory / Pattern Agent: close-and-learn (ITEM 3) ─────────────────────────
+
+@router.post("/engagement/{engagement_id}/close-and-learn")
+def close_and_learn(engagement_id: str):
+    """Extract 3-5 reusable patterns from a completed engagement and save to pattern library."""
+    eng = get_engagement_with_client(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    client = get_client(eng.get("client_id", ""))
+    industry = (client or {}).get("industry") or "Unknown"
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+
+    fit_gap_text = "\n".join(
+        f"- {a.get('req_id', '')}: fit_type={a.get('fit_type', '')}, rationale={a.get('rationale', '')[:200]}"
+        for a in assessments[:50]
+    ) or "No fit-gap data"
+    ricefw_text = "\n".join(
+        f"- {r.get('name', '')}: type={r.get('type', '')}, effort={r.get('effort_days_low', '')}-{r.get('effort_days_high', '')}d"
+        for r in ricefw[:30]
+    ) or "No RICEFW items"
+
+    prompt = f"""You are reviewing a completed SAP implementation. Extract 3-5 reusable patterns for future projects.
+Fit-gap decisions:
+{fit_gap_text}
+RICEFW items:
+{ricefw_text}
+Industry: {industry}
+
+Return JSON array: [{{"category": "fit_resolution|ricefw_pattern|risk_pattern", "title": "...", "content": "...", "industry_tag": "..."}}]
+Only return the JSON array, no other text."""
+
+    provider = get_provider()
+    llm_result = provider.complete(
+        prompt=prompt,
+        system="You are an SAP implementation knowledge manager. Extract concise, reusable patterns.",
+        max_tokens=1200,
+        model=MODEL_SONNET,
+    )
+    raw = (llm_result.get("content") or "").strip()
+
+    patterns_data = []
+    try:
+        json_match = re.search(r'\[.*\]', raw, re.DOTALL)
+        patterns_data = json.loads(json_match.group()) if json_match else json.loads(raw)
+    except (json.JSONDecodeError, AttributeError):
+        patterns_data = []
+
+    patterns_created = []
+    for p in patterns_data[:5]:
+        try:
+            created = create_pattern(
+                name=p.get("title", "Unnamed pattern"),
+                category=p.get("category", "fit_resolution"),
+                content=p.get("content", ""),
+                industry_tag=p.get("industry_tag") or industry,
+            )
+            patterns_created.append(created)
+        except Exception:
+            pass
+
+    try:
+        update_engagement(engagement_id, {"status": "closed"})
+    except Exception:
+        pass
+    try:
+        create_audit_event(
+            engagement_id, "engagement_closed_and_learned",
+            entity_type="engagement", entity_id=engagement_id,
+            details={"patterns_created": len(patterns_created)},
+        )
+    except Exception:
+        pass
+
+    return {
+        "engagement_id": engagement_id,
+        "patterns_created": len(patterns_created),
+        "patterns": patterns_created,
+    }
+
+
+# ── Go-Live Checklist Agent (ITEM 4) ─────────────────────────────────────────
+
+@router.post("/engagement/{engagement_id}/go-live-checklist/generate", status_code=201)
+def generate_go_live_checklist(engagement_id: str):
+    """AI-generate a customised go-live readiness checklist from the RICEFW scope."""
+    eng = get_engagement_with_client(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    client = get_client(eng.get("client_id", ""))
+    industry = (client or {}).get("industry") or "Manufacturing"
+    ricefw = get_ricefw_by_engagement(engagement_id)
+    ricefw_count = len(ricefw)
+    ricefw_types = ", ".join(sorted({r.get("type", "E") for r in ricefw})) or "E"
+
+    prompt = f"""Generate a go-live readiness checklist for SAP S/4HANA implementation.
+Custom development items: {ricefw_count} ({ricefw_types}).
+Industry: {industry}.
+
+Return JSON array of 20-30 checklist items:
+[{{"category": "Technical|Functional|Change Management|Cutover|Hypercare", "item": "...", "owner": "IT|Business|SAP Lead|Project Manager", "due_date_offset_days": -N}}]
+due_date_offset_days is negative = days before go-live (e.g. -30 means 30 days before).
+Only return the JSON array, no other text."""
+
+    provider = get_provider()
+    llm_result = provider.complete(
+        prompt=prompt,
+        system="You are an SAP go-live readiness expert. Generate practical, actionable checklist items.",
+        max_tokens=2000,
+        model=MODEL_HAIKU,
+    )
+    raw = (llm_result.get("content") or "").strip()
+
+    checklist_data = []
+    try:
+        json_match = re.search(r'\[.*\]', raw, re.DOTALL)
+        checklist_data = json.loads(json_match.group()) if json_match else json.loads(raw)
+    except (json.JSONDecodeError, AttributeError):
+        checklist_data = []
+
+    created_items = []
+    for item in checklist_data[:30]:
+        try:
+            created = create_go_live_checklist_item(
+                engagement_id=engagement_id,
+                category=item.get("category", "Technical"),
+                item=item.get("item", ""),
+                owner=item.get("owner"),
+                due_date_offset_days=item.get("due_date_offset_days"),
+            )
+            created_items.append(created)
+        except Exception:
+            pass
+
+    return {"engagement_id": engagement_id, "created": len(created_items), "items": created_items}
+
+
+@router.get("/engagement/{engagement_id}/go-live-checklist")
+def list_go_live_checklist(engagement_id: str):
+    """Return the go-live checklist with completion percentage."""
+    items = get_go_live_checklist(engagement_id)
+    total = len(items)
+    completed = len([i for i in items if i.get("status") == "completed"])
+    go_live_pct = round(completed / total * 100) if total > 0 else 0
+    return {
+        "engagement_id": engagement_id,
+        "total": total,
+        "completed": completed,
+        "go_live_pct": go_live_pct,
+        "items": items,
+    }
+
+
+@router.patch("/go-live-checklist/{item_id}")
+def patch_go_live_checklist_item(item_id: str, body: GoLiveChecklistUpdateRequest):
+    """Update status, notes, or owner for a go-live checklist item."""
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    return update_go_live_checklist_item(item_id, updates)
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
@@ -6090,6 +6772,42 @@ CREATE INDEX IF NOT EXISTS idx_test_scripts_engagement ON test_scripts (engageme
 CREATE INDEX IF NOT EXISTS idx_test_scripts_ricefw ON test_scripts (ricefw_id);
 """
 
+_PORTAL_USERS_DDL = """
+CREATE TABLE IF NOT EXISTS portal_users (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    engagement_id text NOT NULL,
+    client_id text NOT NULL,
+    name text NOT NULL,
+    email text NOT NULL,
+    role text DEFAULT 'client_executive',
+    access_token text UNIQUE,
+    token_expires_at timestamptz,
+    created_at timestamptz DEFAULT now(),
+    last_access timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_portal_users_token ON portal_users (access_token);
+CREATE INDEX IF NOT EXISTS idx_portal_users_engagement ON portal_users (engagement_id);
+"""
+
+_GO_LIVE_CHECKLIST_DDL = """
+CREATE TABLE IF NOT EXISTS go_live_checklist (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    engagement_id text NOT NULL,
+    category text NOT NULL,
+    item text NOT NULL,
+    owner text,
+    due_date_offset_days integer,
+    status text DEFAULT 'not_started',
+    notes text,
+    created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_go_live_checklist_engagement ON go_live_checklist (engagement_id);
+"""
+
+_PATTERN_LIBRARY_EXTRA_DDL = """
+ALTER TABLE pattern_library ADD COLUMN IF NOT EXISTS industry_tag text;
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -6276,6 +6994,9 @@ def run_migrations():
             cur.execute(_SPRINT1_ALTER_DDL)
             cur.execute(_SOURCES_CONTENT_DDL)
             cur.execute(_TEST_SCRIPTS_DDL)
+            cur.execute(_PORTAL_USERS_DDL)
+            cur.execute(_GO_LIVE_CHECKLIST_DDL)
+            cur.execute(_PATTERN_LIBRARY_EXTRA_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -6306,18 +7027,34 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts, portal_users, go_live_checklist, pattern_library_extra ensured"}
         except Exception as e:
+            _all_ddl = (
+                _PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL
+                + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL
+                + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL
+                + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL
+                + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
+                + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
+            ).strip()
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL).strip(),
+                "sql": _all_ddl,
             }
+    _all_ddl = (
+        _PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL
+        + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL
+        + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL
+        + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL
+        + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
+        + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
+    ).strip()
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL).strip(),
+        "sql": _all_ddl,
     }
 
 

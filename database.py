@@ -1141,3 +1141,81 @@ def retain_only_engagement(engagement_id: str) -> dict:
                 pass
 
     return {"ok": True, "message": f"Retained only {target}. Removed other engagements and orphan clients.", "deleted": counts}
+
+
+# ── Portal Users (client-facing portal) ──────────────────────────────────────
+
+def create_portal_user(engagement_id: str, client_id: str, name: str, email: str, role: str, access_token: str, token_expires_at: str) -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "client_id": client_id,
+        "name": name,
+        "email": email,
+        "role": role,
+        "access_token": access_token,
+        "token_expires_at": token_expires_at,
+    }
+    response = supabase.table("portal_users").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_portal_user_by_token(token: str) -> dict:
+    response = (
+        supabase.table("portal_users")
+        .select("*")
+        .eq("access_token", token)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return data[0] if data else None
+
+
+def update_portal_user_last_access(portal_user_id: str) -> None:
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        supabase.table("portal_users").update({"last_access": now}).eq("id", portal_user_id).execute()
+    except Exception:
+        pass
+
+
+# ── Go-Live Checklist ─────────────────────────────────────────────────────────
+
+def create_go_live_checklist_item(engagement_id: str, category: str, item: str, owner: str = None, due_date_offset_days: int = None) -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "category": category,
+        "item": item,
+        "owner": owner,
+        "due_date_offset_days": due_date_offset_days,
+        "status": "not_started",
+    }
+    response = supabase.table("go_live_checklist").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def get_go_live_checklist(engagement_id: str) -> list:
+    response = (
+        supabase.table("go_live_checklist")
+        .select("*")
+        .eq("engagement_id", engagement_id)
+        .order("category")
+        .order("due_date_offset_days")
+        .execute()
+    )
+    return response.data or []
+
+
+def update_go_live_checklist_item(item_id: str, updates: dict) -> dict:
+    response = supabase.table("go_live_checklist").update(updates).eq("id", item_id).execute()
+    return response.data[0] if response.data else {}
+
+
+# ── Pattern Library Create ────────────────────────────────────────────────────
+
+def create_pattern(name: str, category: str, content: str, industry_tag: str = None) -> dict:
+    record = {"name": name, "category": category, "content": content, "use_count": 0}
+    if industry_tag:
+        record["industry_tag"] = industry_tag
+    response = supabase.table("pattern_library").insert(record).execute()
+    return response.data[0] if response.data else {}
