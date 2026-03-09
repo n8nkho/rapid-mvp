@@ -5913,18 +5913,26 @@ def portal_overview(token: str):
             status = "upcoming"
         milestone_summary.append({"name": name, "status": status})
 
+    rag_map = {"green": "on_track", "amber": "at_risk", "red": "behind"}
+    client_name = (client or {}).get("name") or eng.get("client_name") or ""
     return {
-        "engagement": {"name": eng.get("name"), "go_live_date": go_live, "phase": phase},
-        "client": {"name": (client or {}).get("name") or eng.get("client_name")},
-        "project_health": rag,
-        "progress": {"blueprint_pct": blueprint_pct, "ricefw_pct": ricefw_pct},
+        # Flat fields expected by frontend
+        "project_name": eng.get("name") or "",
+        "client_name": client_name,
+        "go_live_date": go_live,
+        "days_remaining": days_to_go_live,
+        "rag_status": rag_map.get(rag, "on_track"),
+        "blueprint_pct": blueprint_pct,
+        "ricefw_pct": ricefw_pct,
         "pending_signoffs": len(pending_signoffs),
+        # Extra context consumed by layout.tsx and timeline
+        "engagement_name": eng.get("name") or "",
+        "phase": phase,
         "recent_decisions": [
-            {"req_id": r.get("req_id"), "title": r.get("title"), "confirmed_at": r.get("updated_at")}
+            {"req_id": r.get("req_id"), "title": r.get("title"), "approved_at": r.get("updated_at")}
             for r in recent_decisions
         ],
         "milestone_summary": milestone_summary,
-        "days_to_go_live": days_to_go_live,
     }
 
 
@@ -6033,7 +6041,7 @@ def portal_decisions(token: str):
             "process_area": r.get("business_process"),
             "fit_type": ft,
             "plain_english": _PORTAL_FIT_LABELS.get(ft, ft),
-            "confirmed_at": r.get("updated_at"),
+            "approved_at": r.get("updated_at"),
             "sign_off_by": r.get("sign_off_by"),
         })
     return {"engagement_id": engagement_id, "total": len(items), "decisions": items}
