@@ -5230,6 +5230,410 @@ def get_command_center_alerts():
     return {"alerts": alerts, "total": len(alerts)}
 
 
+# ── Blueprint ──────────────────────────────────────────────────────────────────
+
+@router.get("/engagement/{engagement_id}/blueprint/preview")
+def blueprint_preview(engagement_id: str):
+    """Return blueprint data as JSON for frontend preview."""
+    eng = get_engagement_with_client(engagement_id)
+    client = (eng or {}).get("client") or {}
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw_items = get_ricefw_by_engagement(engagement_id)
+    sources = list_sources_by_engagement(engagement_id)
+    raci = get_raci_matrix(engagement_id)
+    process_steps_all = get_process_steps_by_engagement(engagement_id)
+
+    assess_by_req = {a["req_id"]: a for a in assessments}
+    steps_by_req: dict = {}
+    for step in process_steps_all:
+        steps_by_req.setdefault(step["req_id"], []).append(step)
+
+    by_process: dict = {}
+    for req in reqs:
+        proc = req.get("business_process") or "General"
+        by_process.setdefault(proc, []).append(req)
+
+    fit_counts: dict = {}
+    for a in assessments:
+        ft = a.get("fit_type", "unknown")
+        fit_counts[ft] = fit_counts.get(ft, 0) + 1
+
+    total_effort_low = sum(r.get("effort_days_low") or 0 for r in ricefw_items)
+    total_effort_high = sum(r.get("effort_days_high") or 0 for r in ricefw_items)
+    open_items = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+    high_risk = [a for a in assessments if a.get("customisation_risk") == "High" or a.get("complexity") in ["L", "XL"]]
+
+    return {
+        "engagement": eng,
+        "client": client,
+        "fit_counts": fit_counts,
+        "total_requirements": len(reqs),
+        "total_ricefw": len(ricefw_items),
+        "total_effort_low": total_effort_low,
+        "total_effort_high": total_effort_high,
+        "process_areas": list(by_process.keys()),
+        "by_process": {
+            proc: [
+                {
+                    "req": req,
+                    "assessment": assess_by_req.get(req["req_id"]),
+                    "steps": steps_by_req.get(req["req_id"], []),
+                }
+                for req in reqs_list
+            ]
+            for proc, reqs_list in by_process.items()
+        },
+        "ricefw_items": ricefw_items,
+        "open_items": open_items,
+        "high_risk_items": high_risk,
+        "raci": raci,
+        "sources": sources,
+        "sign_off_pct": (
+            round(len([r for r in reqs if r.get("sign_off_status") == "confirmed"]) / len(reqs) * 100)
+            if reqs else 0
+        ),
+    }
+
+
+@router.get("/engagement/{engagement_id}/blueprint/export")
+def blueprint_export(engagement_id: str):
+    """Generate and stream a DOCX Blueprint document."""
+    from docx import Document as DocxDocument
+    from docx.shared import Inches, Pt, RGBColor, Cm
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    eng = get_engagement_with_client(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    client = (eng.get("client") or {})
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw_items = get_ricefw_by_engagement(engagement_id)
+    process_steps_all = get_process_steps_by_engagement(engagement_id)
+
+    assess_by_req = {a["req_id"]: a for a in assessments}
+    steps_by_req: dict = {}
+    for step in process_steps_all:
+        steps_by_req.setdefault(step["req_id"], []).append(step)
+
+    by_process: dict = {}
+    for req in reqs:
+        proc = req.get("business_process") or "General"
+        by_process.setdefault(proc, []).append(req)
+
+    fit_counts: dict = {}
+    for a in assessments:
+        ft = a.get("fit_type", "unknown")
+        fit_counts[ft] = fit_counts.get(ft, 0) + 1
+
+    total_effort_low = sum(r.get("effort_days_low") or 0 for r in ricefw_items)
+    total_effort_high = sum(r.get("effort_days_high") or 0 for r in ricefw_items)
+
+    # LLM: Executive Summary
+    exec_summary = ""
+    try:
+        fit_summary_text = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in fit_counts.items())
+        confirmed_count = len([r for r in reqs if r.get("sign_off_status") == "confirmed"])
+        sign_off_pct = round(confirmed_count / len(reqs) * 100) if reqs else 0
+        exec_prompt = f"""Write a professional 3-paragraph executive summary for an SAP S/4HANA Business Blueprint document.
+Client: {client.get('name', 'Client')} ({client.get('industry', 'General')} industry, {client.get('employees', 'N/A')} employees)
+Project: {eng.get('name', 'SAP Implementation')}
+Go-Live Target: {eng.get('go_live_date', 'TBD')}
+Total Requirements: {len(reqs)}
+Fit Analysis: {fit_summary_text}
+Custom Development Items: {len(ricefw_items)} (estimated {total_effort_low}–{total_effort_high} person-days)
+Sign-off completion: {sign_off_pct}%
+
+Para 1: Project context and business objective (2-3 sentences).
+Para 2: Scope and fit-to-standard results in plain business language. No acronyms.
+Para 3: Key outcomes of the blueprint phase and recommended next steps.
+Write in professional consulting style. No markdown."""
+        result = get_provider().complete(
+            model=MODEL_SONNET,
+            messages=[{"role": "user", "content": exec_prompt}],
+            system="You are a senior SAP implementation consultant writing a formal blueprint document.",
+            max_tokens=500,
+        )
+        exec_summary = result["content"].strip()
+    except Exception as e:
+        logger.warning(f"Blueprint exec summary LLM failed: {e}")
+        exec_summary = (
+            f"This Business Blueprint documents the fit-to-standard assessment for "
+            f"{client.get('name', 'the client')} SAP S/4HANA implementation. "
+            f"The assessment covers {len(reqs)} business requirements across {len(by_process)} process areas."
+        )
+
+    doc = DocxDocument()
+
+    def set_cell_bg(cell, hex_color: str):
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), hex_color)
+        tcPr.append(shd)
+
+    for section in doc.sections:
+        section.top_margin = Cm(2.5)
+        section.bottom_margin = Cm(2.5)
+        section.left_margin = Cm(3)
+        section.right_margin = Cm(2.5)
+
+    title = doc.add_heading("Business Blueprint", 0)
+    title.runs[0].font.size = Pt(24)
+
+    doc.add_paragraph(f"Client: {client.get('name', 'N/A')}")
+    doc.add_paragraph(f"Project: {eng.get('name', 'SAP S/4HANA Implementation')}")
+    doc.add_paragraph(f"Go-Live Target: {eng.get('go_live_date', 'TBD')}")
+    doc.add_paragraph(f"Document Date: {datetime.now().strftime('%B %d, %Y')}")
+    doc.add_paragraph("Status: DRAFT")
+    doc.add_paragraph()
+
+    doc.add_heading("1. Executive Summary", level=1)
+    for para_text in exec_summary.split("\n\n"):
+        if para_text.strip():
+            doc.add_paragraph(para_text.strip())
+
+    doc.add_heading("2. Scope Summary", level=1)
+    doc.add_paragraph(
+        f"This blueprint covers {len(reqs)} business requirements across {len(by_process)} process areas."
+    )
+    if by_process:
+        tbl = doc.add_table(rows=1, cols=3)
+        tbl.style = "Table Grid"
+        hdr = tbl.rows[0].cells
+        hdr[0].text = "Process Area"
+        hdr[1].text = "Requirements"
+        hdr[2].text = "Gaps"
+        for proc, proc_reqs in by_process.items():
+            gaps = sum(
+                1 for r in proc_reqs
+                if assess_by_req.get(r["req_id"], {}).get("fit_type") in ["gap_ricefw", "gap_companion"]
+            )
+            row = tbl.add_row().cells
+            row[0].text = proc
+            row[1].text = str(len(proc_reqs))
+            row[2].text = str(gaps)
+        doc.add_paragraph()
+
+    fit_labels = {
+        "fit_standard": "Fit — Standard (no changes)",
+        "fit_config": "Fit — Configuration only",
+        "fit_extension": "Fit — SAP Extension (low risk)",
+        "gap_ricefw": "Gap — Custom Development required",
+        "gap_companion": "Gap — Third-party solution required",
+        "out_of_scope": "Out of Scope",
+    }
+
+    doc.add_heading("3. Fit-to-Standard Analysis", level=1)
+    if fit_counts:
+        tbl2 = doc.add_table(rows=1, cols=3)
+        tbl2.style = "Table Grid"
+        hdr2 = tbl2.rows[0].cells
+        hdr2[0].text = "Classification"
+        hdr2[1].text = "Count"
+        hdr2[2].text = "% of Total"
+        for ft, count in sorted(fit_counts.items()):
+            row = tbl2.add_row().cells
+            row[0].text = fit_labels.get(ft, ft)
+            row[1].text = str(count)
+            row[2].text = f"{round(count / len(assessments) * 100)}%" if assessments else "—"
+        doc.add_paragraph()
+
+    doc.add_heading("4. Business Process Documentation", level=1)
+    doc.add_paragraph(
+        "This section documents each business process area, the current state, SAP future state, and fit-gap decisions."
+    )
+
+    process_keys = list(by_process.keys())
+    for proc, proc_reqs in by_process.items():
+        doc.add_heading(f"4.{process_keys.index(proc) + 1}  {proc}", level=2)
+        try:
+            proc_fits = [assess_by_req.get(r["req_id"], {}).get("fit_type", "unknown") for r in proc_reqs]
+            fit_summary_proc = ", ".join(
+                f"{proc_fits.count(ft)} {ft.replace('_', ' ')}" for ft in set(proc_fits)
+            )
+            area_prompt = (
+                f"Write 2 sentences summarizing this SAP process area assessment. "
+                f"Process: {proc}. {len(proc_reqs)} requirements: {fit_summary_proc}. "
+                f"Focus on business impact and any gaps."
+            )
+            area_result = get_provider().complete(
+                model=MODEL_HAIKU,
+                messages=[{"role": "user", "content": area_prompt}],
+                system="SAP consultant. 2 sentences only. Plain English.",
+                max_tokens=120,
+            )
+            doc.add_paragraph(area_result["content"].strip())
+        except Exception:
+            doc.add_paragraph(f"This area covers {len(proc_reqs)} requirements.")
+
+        for req in proc_reqs:
+            req_title = req.get("title") or (req.get("description", "")[:60] + "...")
+            doc.add_heading(f"{req['req_id']}: {req_title}", level=3)
+            doc.add_paragraph("Current State (As-Is):", style="Intense Quote")
+            doc.add_paragraph(req.get("description") or "Not documented.")
+            steps = steps_by_req.get(req["req_id"], [])
+            if steps:
+                doc.add_paragraph("Process Steps:")
+                for s in sorted(steps, key=lambda x: x.get("step_number", 0)):
+                    doc.add_paragraph(
+                        f"  {s.get('step_number', '')}. {s.get('title', '')} — {s.get('description', '')}",
+                        style="List Bullet",
+                    )
+            assessment = assess_by_req.get(req["req_id"])
+            if assessment:
+                doc.add_paragraph("SAP Assessment:", style="Intense Quote")
+                ft = assessment.get("fit_type", "—")
+                doc.add_paragraph(f"Fit Classification: {fit_labels.get(ft, ft)}")
+                doc.add_paragraph(f"SAP Scope Item: {assessment.get('sap_scope_item_name') or '—'}")
+                doc.add_paragraph(
+                    f"Complexity: {assessment.get('complexity', '—')}  |  "
+                    f"Clean Core Impact: {assessment.get('clean_core_impact', '—')}"
+                )
+                if assessment.get("rationale"):
+                    doc.add_paragraph(f"Assessment: {assessment['rationale']}")
+                if assessment.get("workaround_option"):
+                    doc.add_paragraph(f"Decision / Workaround: {assessment['workaround_option']}")
+                elo = assessment.get("estimated_effort_days_low", 0)
+                ehi = assessment.get("estimated_effort_days_high", 0)
+                if elo or ehi:
+                    doc.add_paragraph(
+                        f"Effort Estimate: {elo}–{ehi} person-days  |  Cost Band: {assessment.get('cost_band', '—')}"
+                    )
+            doc.add_paragraph(
+                f"Sign-Off Status: {req.get('sign_off_status', 'draft').replace('_', ' ').title()}"
+            )
+            doc.add_paragraph()
+
+    doc.add_heading("5. RICEFW Custom Development Inventory", level=1)
+    if ricefw_items:
+        doc.add_paragraph(
+            f"Total items: {len(ricefw_items)}. Estimated effort: {total_effort_low}–{total_effort_high} person-days."
+        )
+        tbl3 = doc.add_table(rows=1, cols=6)
+        tbl3.style = "Table Grid"
+        hdr3 = tbl3.rows[0].cells
+        for i, h in enumerate(["ID", "Type", "Name", "Complexity", "Effort (days)", "Status"]):
+            hdr3[i].text = h
+        for item in ricefw_items:
+            row = tbl3.add_row().cells
+            row[0].text = item.get("id", "")[:8]
+            row[1].text = item.get("type", "—")
+            row[2].text = (item.get("name") or "—")[:40]
+            row[3].text = item.get("complexity") or "—"
+            lo = item.get("effort_days_low") or "?"
+            hi = item.get("effort_days_high") or "?"
+            row[4].text = f"{lo}–{hi}"
+            row[5].text = item.get("status", "identified")
+        doc.add_paragraph()
+    else:
+        doc.add_paragraph("No custom development items identified in this engagement.")
+
+    doc.add_heading("6. Open Items and Risks", level=1)
+    open_reqs = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
+    if open_reqs:
+        doc.add_heading("6.1 Open Sign-Off Items", level=2)
+        tbl4 = doc.add_table(rows=1, cols=3)
+        tbl4.style = "Table Grid"
+        h4 = tbl4.rows[0].cells
+        h4[0].text = "Requirement"
+        h4[1].text = "Process Area"
+        h4[2].text = "Status"
+        for r in open_reqs[:20]:
+            row = tbl4.add_row().cells
+            row[0].text = f"{r['req_id']}: {(r.get('title') or r.get('description', ''))[:50]}"
+            row[1].text = r.get("business_process", "—")
+            row[2].text = r.get("sign_off_status", "draft").replace("_", " ").title()
+        doc.add_paragraph()
+
+    high_risk = [
+        a for a in assessments
+        if a.get("customisation_risk") == "High" or a.get("complexity") in ["L", "XL"]
+    ]
+    if high_risk:
+        doc.add_heading("6.2 Risk Register", level=2)
+        try:
+            risk_items_text = "\n".join(
+                f"- {a.get('req_id')}: fit_type={a.get('fit_type')}, complexity={a.get('complexity')}, "
+                f"risk={a.get('customisation_risk')}, rationale={a.get('rationale', '')[:100]}"
+                for a in high_risk[:10]
+            )
+            risk_prompt = (
+                f"For each SAP implementation risk item below, write one risk statement and one mitigation.\n"
+                f"Items:\n{risk_items_text}\n\n"
+                f'Return JSON array: [{{"item": "req_id", "risk": "...", "mitigation": "..."}}]\nJSON only.'
+            )
+            risk_result = get_provider().complete(
+                model=MODEL_SONNET,
+                messages=[{"role": "user", "content": risk_prompt}],
+                system="SAP risk analyst. Return JSON array only.",
+                max_tokens=800,
+            )
+            raw_risk = risk_result["content"].strip()
+            if raw_risk.startswith("```"):
+                raw_risk = raw_risk.split("```")[1]
+                if raw_risk.startswith("json"):
+                    raw_risk = raw_risk[4:]
+            risk_data = json.loads(raw_risk)
+            tbl5 = doc.add_table(rows=1, cols=3)
+            tbl5.style = "Table Grid"
+            h5 = tbl5.rows[0].cells
+            h5[0].text = "Item"
+            h5[1].text = "Risk"
+            h5[2].text = "Mitigation"
+            for rd in risk_data:
+                row = tbl5.add_row().cells
+                row[0].text = rd.get("item", "—")
+                row[1].text = rd.get("risk", "—")
+                row[2].text = rd.get("mitigation", "—")
+        except Exception:
+            for a in high_risk[:5]:
+                doc.add_paragraph(
+                    f"• {a.get('req_id')}: {a.get('rationale', 'High complexity item requires careful planning.')}",
+                    style="List Bullet",
+                )
+        doc.add_paragraph()
+
+    doc.add_heading("7. Document Sign-Off", level=1)
+    doc.add_paragraph(
+        "By signing below, the parties confirm that this Business Blueprint accurately represents "
+        "the agreed scope and design decisions."
+    )
+    doc.add_paragraph()
+    doc.add_paragraph(f"Client: {client.get('name', '________________________')}")
+    doc.add_paragraph("Name: ________________________   Title: ________________________")
+    doc.add_paragraph("Signature: ___________________   Date: _________________________")
+    doc.add_paragraph()
+    doc.add_paragraph("Consultant:")
+    doc.add_paragraph("Name: ________________________   Title: ________________________")
+    doc.add_paragraph("Signature: ___________________   Date: _________________________")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    eng_name_safe = (eng.get("name") or "engagement").replace(" ", "_").replace("/", "-")[:30]
+    filename = f"Blueprint_{eng_name_safe}_{datetime.now().strftime('%Y%m%d')}.docx"
+
+    try:
+        create_audit_event(
+            engagement_id, "blueprint_exported", entity_type="blueprint",
+            details={"filename": filename, "sections": 7},
+        )
+    except Exception:
+        pass
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ── Admin Migrations ──────────────────────────────────────────────────────────
 
 _PROCESS_STEPS_DDL = """
