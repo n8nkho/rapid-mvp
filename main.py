@@ -4236,7 +4236,9 @@ def get_fit_gap_board(engagement_id: str):
 
         req = req_map.get(a["req_id"]) or {}
         a_with_req = {**a, "requirement_title": req.get("title"), "requirement_business_process": req.get("business_process")}
-        bucket = by_fit_type.get(ft) or by_fit_type.get("out_of_scope")
+        bucket = by_fit_type.get(ft)
+        if bucket is None:
+            bucket = by_fit_type.get("out_of_scope")
         if bucket is not None:
             bucket.append(a_with_req)
 
