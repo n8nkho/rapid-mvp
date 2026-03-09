@@ -5164,6 +5164,104 @@ def post_testing_run(request: Request, body: TestingRunRequest):
     }
 
 
+@router.post("/engagement/{engagement_id}/test-scripts/generate", status_code=200)
+def generate_test_scripts(engagement_id: str, body: dict = Body(...)):
+    """Generate test scripts for RICEFW items using AI. Body: {ricefw_id?: str}"""
+    ricefw_id_filter = body.get("ricefw_id")
+    ricefw_items = get_ricefw_by_engagement(engagement_id)
+    if ricefw_id_filter:
+        ricefw_items = [r for r in ricefw_items if r.get("id") == ricefw_id_filter]
+    if not ricefw_items:
+        raise HTTPException(status_code=404, detail="No RICEFW items found")
+
+    reqs = get_requirements_by_engagement(engagement_id)
+    req_map = {r["req_id"]: r for r in reqs}
+
+    # Build a test_case_id counter for this engagement
+    existing_scripts = list_test_scripts_by_engagement(engagement_id)
+    existing_nums = []
+    for s in existing_scripts:
+        tc = s.get("test_case_id") or ""
+        if tc.startswith("TC-"):
+            try:
+                existing_nums.append(int(tc.split("-")[1]))
+            except (IndexError, ValueError):
+                pass
+    next_tc_num = max(existing_nums, default=0) + 1
+
+    created = []
+    for item in ricefw_items:
+        req_desc = ""
+        if item.get("req_id"):
+            req = req_map.get(item["req_id"])
+            if req:
+                req_desc = req.get("description", "")
+
+        prompt = f"""You are an SAP test case writer. Generate a test case for this custom development item.
+
+Item Type: {item.get('type', 'E')}
+Name: {item.get('name', '')}
+Description: {item.get('description', '')}
+Linked Requirement: {req_desc or 'N/A'}
+
+Return JSON only (no markdown):
+{{
+  "title": "...",
+  "test_objective": "1-2 sentence test objective",
+  "preconditions": "What must be set up before running this test",
+  "steps": [
+    {{"number": 1, "action": "...", "expected": "..."}},
+    {{"number": 2, "action": "...", "expected": "..."}}
+  ],
+  "expected_result": "Overall expected outcome"
+}}
+
+Generate 3–5 steps covering the happy path."""
+
+        try:
+            result = get_provider().complete(
+                model=MODEL_HAIKU,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are an SAP test case writer. Return valid JSON only.",
+                max_tokens=500,
+            )
+            raw = result["content"].strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            data = json.loads(raw)
+            test_case_id = f"TC-{next_tc_num:03d}"
+            next_tc_num += 1
+            script = create_test_script({
+                "engagement_id": engagement_id,
+                "ricefw_id": item.get("id"),
+                "req_id": item.get("req_id"),
+                "test_case_id": test_case_id,
+                "title": data.get("title"),
+                "test_objective": data.get("test_objective"),
+                "preconditions": data.get("preconditions"),
+                "steps": data.get("steps"),
+                "expected_result": data.get("expected_result"),
+                "status": "draft",
+            })
+            created.append(script)
+        except Exception as e:
+            logger.warning(f"Test script generation failed for RICEFW {item.get('id')}: {e}")
+
+    return {"engagement_id": engagement_id, "created": len(created), "test_scripts": created}
+
+
+@router.get("/engagement/{engagement_id}/test-scripts", status_code=200)
+def list_test_scripts(engagement_id: str, ricefw_id: Optional[str] = None):
+    """List test scripts for an engagement, optionally filtered by ricefw_id."""
+    if ricefw_id:
+        scripts = list_test_scripts_by_ricefw(engagement_id, ricefw_id)
+    else:
+        scripts = list_test_scripts_by_engagement(engagement_id)
+    return {"engagement_id": engagement_id, "total": len(scripts), "test_scripts": scripts}
+
+
 @router.get("/command-center/alerts")
 def get_command_center_alerts():
     """Scan all engagements and return prioritized action items for the command center."""
@@ -5969,6 +6067,30 @@ ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS status text DEFAULT 'ident
 ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS priority text;
 """
 
+_SOURCES_CONTENT_DDL = """
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS content text;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS file_size integer;
+"""
+
+_TEST_SCRIPTS_DDL = """
+CREATE TABLE IF NOT EXISTS test_scripts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id text NOT NULL,
+  ricefw_id text,
+  req_id text,
+  test_case_id text,
+  title text,
+  test_objective text,
+  preconditions text,
+  steps jsonb,
+  expected_result text,
+  status text DEFAULT 'draft',
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_test_scripts_engagement ON test_scripts (engagement_id);
+CREATE INDEX IF NOT EXISTS idx_test_scripts_ricefw ON test_scripts (ricefw_id);
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -6153,6 +6275,8 @@ def run_migrations():
             cur.execute(_RACI_MATRIX_DDL)
             cur.execute(_ENGAGEMENT_SCOPE_DDL)
             cur.execute(_SPRINT1_ALTER_DDL)
+            cur.execute(_SOURCES_CONTENT_DDL)
+            cur.execute(_TEST_SCRIPTS_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -6183,18 +6307,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL).strip(),
     }
 
 
