@@ -4097,7 +4097,7 @@ Classify this requirement as one of:
 - out_of_scope: not in scope
 
 Return JSON only:
-{{"fit_type":"fit_standard|fit_config|fit_extension|gap_ricefw|gap_companion|out_of_scope","complexity":"XS|S|M|L|XL","rationale":"2-3 sentence explanation","sap_scope_item_id":null or "ID","sap_scope_item_name":null or "name","workaround_option":null or "text","customisation_risk":null or "Low|Medium|High","clean_core_impact":null or "None|Low|Medium|High","estimated_effort_days_low":0,"estimated_effort_days_high":0,"cost_band":"<5k|5k-20k|20k-100k|>100k","confidence_score":0.8}}"""
+{{"fit_type":"fit_standard|fit_config|fit_extension|gap_ricefw|gap_companion|out_of_scope","complexity":"XS|S|M|L|XL","rationale":"2-3 sentence explanation","reasoning":"1-2 sentences explaining why this fit_type was chosen","sap_scope_item_id":null or "ID","sap_scope_item_name":null or "name","workaround_option":null or "text","customisation_risk":null or "Low|Medium|High","clean_core_impact":null or "None|Low|Medium|High","estimated_effort_days_low":0,"estimated_effort_days_high":0,"cost_band":"<5k|5k-20k|20k-100k|>100k","confidence_score":0.8}}"""
 
 
 @router.post("/requirements/{req_id}/fit-gap-assess", status_code=201)
@@ -4178,6 +4178,7 @@ def fit_gap_assess(req_id: str, engagement_id: str):
         "cost_band": data.get("cost_band"),
         "ai_generated": True,
         "confidence_score": data.get("confidence_score"),
+        "reasoning": data.get("reasoning"),
         "hitl_state": "ai_draft",
     }
     assessment = create_fit_gap_assessment(record)
@@ -5243,6 +5244,17 @@ CREATE TABLE IF NOT EXISTS engagement_scope (
 );
 """
 
+_SPRINT1_ALTER_DDL = """
+ALTER TABLE fit_gap_assessments ADD COLUMN IF NOT EXISTS reasoning text;
+ALTER TABLE hitl_events ADD COLUMN IF NOT EXISTS confidence_score numeric;
+ALTER TABLE hitl_events ADD COLUMN IF NOT EXISTS reasoning text;
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS effort_days_low integer;
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS effort_days_high integer;
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS owner text;
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS status text DEFAULT 'identified';
+ALTER TABLE ricefw_inventory ADD COLUMN IF NOT EXISTS priority text;
+"""
+
 _AGENT_ROLES_SEED = [
     ("lead_consultant", "Lead ERP Consultant (Manufacturing SME)", "Act as a senior Cloud ERP consultant with deep discrete manufacturing experience. Guide requirements structure and fit/gap framing; challenge unrealistic customization; ensure traceability from business value to process to requirement to gap.",
      ["Engineer-to-Order", "Make-to-Order", "Make-to-Stock", "Procure-to-Pay", "Order-to-Cash", "Record-to-Report", "SAP S/4HANA Clean Core", "fit-to-standard"],
@@ -5426,6 +5438,7 @@ def run_migrations():
             cur.execute(_AUDIT_EVENTS_DDL)
             cur.execute(_RACI_MATRIX_DDL)
             cur.execute(_ENGAGEMENT_SCOPE_DDL)
+            cur.execute(_SPRINT1_ALTER_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -5456,18 +5469,18 @@ def run_migrations():
                     )
             cur.close()
             conn.close()
-            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events ensured"}
+            return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns ensured"}
         except Exception as e:
             return {
                 "status": "manual_required",
                 "error": str(e),
                 "message": "Auto-migration failed. Run the SQL below in Supabase SQL Editor.",
-                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
+                "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL).strip(),
             }
     return {
         "status": "manual_required",
         "message": "Set DATABASE_URL env var for auto-migration. Run the SQL below in Supabase SQL Editor.",
-        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL).strip(),
+        "sql": (_PROCESS_STEPS_DDL + _RICEFW_DDL + _CLIENTS_EXTRA_DDL + _BENCHMARK_HINTS_DDL + _ENGAGEMENTS_EXTRA_DDL + _REQUIREMENTS_EXTRA_DDL + _REQUIREMENTS_SOURCE_DDL + _SOURCES_DDL + _HITL_DDL + _FIT_GAP_DDL + _ASSETS_DDL + _USER_ENGAGEMENT_ACCESS_DDL + _FEEDBACK_PATTERN_DDL + _AGENT_ROLES_DDL + _AUDIT_EVENTS_DDL + _RACI_MATRIX_DDL + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL).strip(),
     }
 
 
