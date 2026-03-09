@@ -374,6 +374,9 @@ class EngagementCreate(BaseModel):
     sponsor: Optional[str] = None
     risk_level: Optional[str] = None        # low | medium | high
     health: Optional[str] = None            # on_track | at_risk | off_track
+    # Engagement Mode (Phase 1)
+    mode: Optional[str] = "collaborative"   # guided | collaborative | autonomous
+    autonomy_config: Optional[dict] = None
 
 class SignOffRequest(BaseModel):
     level: str      # "sme" or "owner"
@@ -998,6 +1001,8 @@ class EngagementUpdate(BaseModel):
     sponsor: Optional[str] = None
     risk_level: Optional[str] = None
     health: Optional[str] = None
+    mode: Optional[str] = None              # guided | collaborative | autonomous
+    autonomy_config: Optional[dict] = None
 
 
 @router.patch("/engagements/{engagement_id}")
@@ -7155,6 +7160,8 @@ def run_migrations():
                         "INSERT INTO agent_knowledge (role_id, category, content, source) VALUES (%s, %s, %s, %s)",
                         (role_id, category, content, source),
                     )
+            # Reload PostgREST schema cache so new columns are visible immediately
+            cur.execute("NOTIFY pgrst, 'reload schema'")
             cur.close()
             conn.close()
             return {"status": "ok", "message": "process_steps, ricefw_inventory, clients, engagements, requirements, sources, HITL, fit_gap_assessments, assets, user_engagement_access, feedback_events, pattern_library, benchmark_hints, agent_roles, agent_knowledge, agent_maturity_scores, platform_issues, audit_events, sprint1_alter_columns, sources_content, test_scripts, portal_users, go_live_checklist, pattern_library_extra, agent_action_queue ensured"}
