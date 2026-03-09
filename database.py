@@ -517,12 +517,24 @@ def update_asset(asset_id: str, updates: dict) -> dict:
 def upload_file_to_storage(
     engagement_id: str, asset_id: str, file_name: str, file_bytes: bytes, content_type: str
 ) -> str:
-    """Upload file to rapid-assets Supabase Storage bucket and return the public URL."""
+    """Upload file to rapid-assets Supabase Storage bucket and return the public URL.
+    Auto-creates the bucket if it does not exist."""
+    bucket = "rapid-assets"
     path = f"{engagement_id}/{asset_id}/{file_name}"
-    supabase.storage.from_("rapid-assets").upload(
-        path, file_bytes, {"content-type": content_type}
-    )
-    return supabase.storage.from_("rapid-assets").get_public_url(path)
+    try:
+        supabase.storage.from_(bucket).upload(
+            path, file_bytes, {"content-type": content_type}
+        )
+    except Exception:
+        # Bucket may not exist — attempt to create it (public) then retry
+        try:
+            supabase.storage.create_bucket(bucket, options={"public": True})
+        except Exception:
+            pass  # Already exists or can't create — let the retry surface the real error
+        supabase.storage.from_(bucket).upload(
+            path, file_bytes, {"content-type": content_type}
+        )
+    return supabase.storage.from_(bucket).get_public_url(path)
 
 
 # ── Process Steps ─────────────────────────────────────────────────────────────
