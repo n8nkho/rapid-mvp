@@ -304,6 +304,8 @@ def create_engagement(data: dict) -> dict:
 
 
 def get_engagement(engagement_id: str) -> dict:
+    import logging as _logging
+    _log = _logging.getLogger("rapid")
     response = (
         supabase.table("engagements")
         .select("*")
@@ -312,6 +314,8 @@ def get_engagement(engagement_id: str) -> dict:
         .execute()
     )
     data = response.data or []
+    if data:
+        _log.warning("get_engagement keys: %s", sorted(data[0].keys()))
     return data[0] if data else None
 
 
