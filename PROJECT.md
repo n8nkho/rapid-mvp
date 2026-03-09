@@ -11,7 +11,7 @@ Frontend: https://rapid-ui-wine.vercel.app
 GitHub: https://github.com/n8nkho/rapid-mvp
 
 ## Current Status / Recent Changes
-**Last updated:** 2026-03-09 (seed-requirements, fit-gap fit_type fix, frontend Seed test data + X-API-Key)
+**Last updated:** 2026-03-09 (Sprint 1 backend: confidence scores, deliverable-progress, RICEFW effort fields, command-center alerts, pattern pre-check)
 
 **Checkpoint tag:** `RAPID_CHECKPOINT_2026-03-057` — resume from **docs/RAPID_CHECKPOINT_2026-03-057.md**; prompt: see that file or "Continue RAPID from checkpoint".
 
@@ -19,7 +19,11 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 - Requirements CRUD, transcript extract, archaeologist agent
 - Gap analysis (244 scope items), analyse-all
 - HITL pipeline: hitl_state, hitl-advance, hitl-reject, hitl-queue, hitl-events; **GET /engagement/{id}/hitl-report** (Excel)
-- **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess, GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- **Fit/Gap:** fit_gap_assessments table; POST fit-gap-assess (returns reasoning + confidence_score), GET fit-gap-board, POST review, POST fit-gap-analyse-all
+- **GET /engagement/{id}/deliverable-progress** — blueprint_pct, ricefw_pct, test_scripts_pct, go_live_pct with detail breakdown
+- **GET /command-center/alerts** — scan all engagements; HITL queue (high/medium), sign-off completeness, RICEFW missing estimates (low)
+- **RICEFW inventory:** effort_days_low, effort_days_high, owner fields added (POST + PATCH support)
+- **Pattern pre-check in fit-gap:** title word-overlap match injects relevant past resolution into user prompt
 - **Sources (enterprise):** sources table; POST/GET/PATCH/DELETE /sources, GET /engagement/{id}/sources, **POST /sources/{id}/extract** (LLM); requirement columns source_id, source_excerpt, extraction_confidence
 - **GET /engagement/{id}/completion-check** — engagement completion checklist (all reqs have fit-gap, all assessments reviewed)
 - **RICEFW from gaps:** POST /engagement/{id}/ricefw-generate
@@ -41,6 +45,7 @@ GitHub: https://github.com/n8nkho/rapid-mvp
 3. Further: maturity scoring UI, lessons-learned export, backlog prioritisation.
 
 **RECENT CHANGES:**
+- 2026-03-09: **Sprint 1 backend:** fit_gap_assessments + hitl_events now store `reasoning` and `confidence_score` (LLM returns 1-2 sentence fit_type justification); GET /engagement/{id}/deliverable-progress (blueprint_pct/ricefw_pct); RICEFW inventory adds effort_days_low, effort_days_high, owner to POST+PATCH; GET /command-center/alerts (prioritized action items across all engagements: hitl queue / sign-off completeness / ricefw estimates); fit-gap prompt now injects matching pattern library hint by title word overlap. Migration: _SPRINT1_ALTER_DDL adds 8 new columns. Run POST /v1/admin/migrate (needs DATABASE_URL on Railway for auto-run; SQL in response otherwise).
 - 2026-03-09: **Seed requirements + fit-gap board fix (backend):** POST /v1/simulate/seed-requirements (Claude Sonnet: requirements + fit-gap + HITL ai_draft); fit-gap board normalizes fit_type with .replace(" ", "_"). **Frontend:** HITL and Assets/Capture use X-API-Key (fallback rapid-admin-2020); engagement detail shows "Seed test data" when requirements count is 0 (modal: industry + processes → POST seed-requirements, toast, refresh).
 - 2026-03-08: **RACI + Scope + User mgmt (backend):** raci_matrix table (matrix, finalized, change_log); engagement_scope table (scope jsonb); GET/PATCH engagement/{id}/raci, GET/PATCH engagement/{id}/scope. Run POST /v1/admin/migrate to create new tables.
 - 2026-03-08: **Enterprise UX batch (backend):** Client address (column + ClientCreate/ClientUpdate); engagements list and get_engagement_with_client return client_name; POST /v1/engagement/{engagement_id}/ask-rapid for context-sensitive Ask RAPID (engagement + client + requirements + fit-gap + RICEFW); fallback doc docs/RAPID_FALLBACK_2026-03-08.md; tag rapid-fallback-2026-03-08.
