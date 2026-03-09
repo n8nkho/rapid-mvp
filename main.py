@@ -475,6 +475,9 @@ class RICEFWCreate(BaseModel):
     status: Optional[str] = "identified"
     complexity: Optional[str] = None   # very_high | high | medium | low
     priority: Optional[str] = None     # must | should | could | noneed
+    effort_days_low: Optional[int] = None
+    effort_days_high: Optional[int] = None
+    owner: Optional[str] = None
 
 
 class RICEFWUpdate(BaseModel):
@@ -485,6 +488,9 @@ class RICEFWUpdate(BaseModel):
     status: Optional[str] = None
     complexity: Optional[str] = None
     priority: Optional[str] = None
+    effort_days_low: Optional[int] = None
+    effort_days_high: Optional[int] = None
+    owner: Optional[str] = None
 
 
 # Phase D: Feedback
@@ -3982,6 +3988,9 @@ def create_ricefw(engagement_id: str, body: RICEFWCreate):
             status=(body.status or "identified").lower(),
             complexity=body.complexity.lower() if body.complexity else None,
             priority=body.priority.lower() if body.priority else None,
+            effort_days_low=body.effort_days_low,
+            effort_days_high=body.effort_days_high,
+            owner=body.owner,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

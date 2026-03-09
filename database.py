@@ -671,6 +671,9 @@ def create_ricefw_item(
     status: str = "identified",
     complexity: str = None,
     priority: str = None,
+    effort_days_low: int = None,
+    effort_days_high: int = None,
+    owner: str = None,
 ) -> dict:
     """item_type: R | I | C | E | F | W | A. req_id and description are required."""
     now = datetime.now(timezone.utc).isoformat()
@@ -689,6 +692,12 @@ def create_ricefw_item(
         record["complexity"] = complexity
     if priority is not None:
         record["priority"] = priority
+    if effort_days_low is not None:
+        record["effort_days_low"] = effort_days_low
+    if effort_days_high is not None:
+        record["effort_days_high"] = effort_days_high
+    if owner is not None:
+        record["owner"] = owner
     response = supabase.table("ricefw_inventory").insert(record).execute()
     return response.data[0] if response.data else {}
 
