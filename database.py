@@ -456,11 +456,10 @@ def delete_source(source_id: str, engagement_id: str) -> bool:
 # ── Assets ────────────────────────────────────────────────────────────────────
 
 def _next_asset_id(engagement_id: str) -> str:
-    """Generate next sequential AST-XXX id, unique within an engagement."""
+    """Generate next sequential AST-XXX id, globally unique across all engagements."""
     response = (
         supabase.table("assets")
         .select("asset_id")
-        .eq("engagement_id", engagement_id)
         .execute()
     )
     existing = response.data or []
