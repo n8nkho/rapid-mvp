@@ -7239,22 +7239,23 @@ class ReleaseReadinessScanRequest(BaseModel):
 
 @router.post("/admin/seed-release-changes", status_code=200)
 def seed_release_changes():
-    """Seed realistic SAP S/4HANA 2602-2608 breaking changes for release readiness scanner."""
+    """Seed realistic SAP S/4HANA 2602-2608 breaking changes. Truncates existing seed rows first to prevent duplicates."""
+    # Delete all existing rows for releases we're about to seed (idempotent re-run)
+    seed_releases = list({c["release_id"] for c in _SAP_RELEASE_SEED})
+    for rid in seed_releases:
+        try:
+            supabase.table("sap_release_changes").delete().eq("release_id", rid).execute()
+        except Exception:
+            pass
+
     inserted = 0
     errors = []
     for change in _SAP_RELEASE_SEED:
         try:
-            supabase.table("sap_release_changes").upsert(
-                change, on_conflict="id", ignore_duplicates=False
-            ).execute()
+            supabase.table("sap_release_changes").insert(change).execute()
             inserted += 1
         except Exception as exc:
-            # Try insert instead
-            try:
-                supabase.table("sap_release_changes").insert(change).execute()
-                inserted += 1
-            except Exception as exc2:
-                errors.append(str(exc2)[:80])
+            errors.append(str(exc)[:80])
     return {"seeded": inserted, "errors": errors, "total": len(_SAP_RELEASE_SEED)}
 
 
@@ -7312,6 +7313,7 @@ def release_readiness_scan(engagement_id: str, body: ReleaseReadinessScanRequest
         area_reqs = [r for r in reqs if area in (r.get("business_process") or "").upper()
                      or area in (r.get("target_system_module") or "").upper()]
 
+        # Only count signals that show actual engagement relevance
         impact_score = 0
         if scope_overlap:
             impact_score += 40
@@ -7319,10 +7321,12 @@ def release_readiness_scan(engagement_id: str, body: ReleaseReadinessScanRequest
             impact_score += 35
         if area_reqs:
             impact_score += 15
-        if change.get("change_type") in ("breaking_change", "deprecation"):
+
+        # Breaking/deprecation adds weight only when there's already an engagement signal
+        if impact_score > 0 and change.get("change_type") in ("breaking_change", "deprecation"):
             impact_score += 10
 
-        if impact_score > 0 or severity in ("critical", "high"):
+        if impact_score > 0:
             finding = {
                 "change_id": str(change.get("id") or ""),
                 "release_id": change.get("release_id"),
