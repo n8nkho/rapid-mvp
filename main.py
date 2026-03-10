@@ -105,6 +105,7 @@ from database import (
     get_queue_items,
     update_queue_item_status,
     update_engagement_mode,
+    supabase,
 )
 from autonomy import should_auto_execute, get_effective_config
 from scope_items import SCOPE_ITEMS, get_catalogue_text
