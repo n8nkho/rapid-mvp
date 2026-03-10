@@ -1258,6 +1258,36 @@ def update_queue_item_status(item_id: str, status: str, reviewed_by: str | None 
     return response.data[0] if response.data else {}
 
 
+def create_notification_log_entry(
+    event_type: str,
+    engagement_id: str | None,
+    source: str,
+    payload: dict,
+    signature_valid: bool | None,
+) -> dict:
+    record: dict = {
+        "event_type": event_type,
+        "source": source,
+        "payload": payload,
+    }
+    if engagement_id:
+        record["engagement_id"] = engagement_id
+    if signature_valid is not None:
+        record["signature_valid"] = signature_valid
+    response = supabase.table("notification_log").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
+def create_portal_digest_log(engagement_id: str, digest: dict, run_mode: str = "manual") -> dict:
+    record = {
+        "engagement_id": engagement_id,
+        "digest": digest,
+        "run_mode": run_mode,
+    }
+    response = supabase.table("portal_digest_log").insert(record).execute()
+    return response.data[0] if response.data else {}
+
+
 def update_engagement_mode(engagement_id: str, mode: str, autonomy_config: dict | None = None) -> dict:
     update: dict = {"mode": mode}
     if autonomy_config is not None:
