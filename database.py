@@ -1258,6 +1258,30 @@ def update_queue_item_status(item_id: str, status: str, reviewed_by: str | None 
     return response.data[0] if response.data else {}
 
 
+def get_portal_users_by_engagement(engagement_id: str) -> list:
+    response = (
+        supabase.table("portal_users")
+        .select("id, name, email, role, last_access, token_expires_at")
+        .eq("engagement_id", engagement_id)
+        .order("last_access", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def get_client_tier(client_id: str) -> str:
+    """Return client tier (starter|professional|enterprise). Defaults to 'starter'."""
+    response = (
+        supabase.table("clients")
+        .select("tier")
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    data = response.data or []
+    return (data[0].get("tier") or "starter") if data else "starter"
+
+
 def create_notification_log_entry(
     event_type: str,
     engagement_id: str | None,

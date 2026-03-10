@@ -6473,18 +6473,63 @@ def patch_go_live_checklist_item(item_id: str, body: GoLiveChecklistUpdateReques
 class SetEngagementModeRequest(BaseModel):
     mode: str
     autonomy_config: Optional[dict] = None
+    force: Optional[bool] = False   # bypass pending-items warning
+
 
 @router.patch("/engagement/{engagement_id}/mode")
 def set_engagement_mode(engagement_id: str, body: SetEngagementModeRequest):
-    """Update engagement mode (guided/collaborative/autonomous) and optional config overrides."""
+    """Update engagement mode (guided/collaborative/autonomous) with pending-item warning and tier lock.
+    Returns 409 with warning payload if pending queue items exist (use force=true to override).
+    Returns 403 if client tier doesn't meet mode requirements.
+    Caches client tier in autonomy_config so _queue_or_execute can enforce it without extra DB calls.
+    """
     if body.mode not in ("guided", "collaborative", "autonomous"):
         raise HTTPException(status_code=400, detail="mode must be guided, collaborative, or autonomous")
+
     eng = get_engagement(engagement_id)
     if not eng:
         raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
-    updated = update_engagement_mode(engagement_id, body.mode, body.autonomy_config)
-    return {"engagement_id": engagement_id, "mode": body.mode,
-            "autonomy_config": body.autonomy_config or {}}
+
+    # ── Tier lock check ──────────────────────────────────────────────────────
+    from autonomy import check_tier_access, MODE_TIER_REQUIREMENTS
+    from database import get_client_tier
+    client_id = eng.get("client_id") or ""
+    client_tier = get_client_tier(client_id) if client_id else "starter"
+    tier_ok, tier_reason = check_tier_access(client_tier, body.mode)
+    if not tier_ok:
+        raise HTTPException(status_code=403, detail=tier_reason)
+
+    # ── Pending-items warning ────────────────────────────────────────────────
+    if not body.force:
+        pending = get_queue_items(engagement_id, "pending")
+        if pending:
+            return {
+                "warning": True,
+                "engagement_id": engagement_id,
+                "current_mode": eng.get("mode") or "collaborative",
+                "requested_mode": body.mode,
+                "pending_items": len(pending),
+                "message": (
+                    f"{len(pending)} pending action queue item(s) exist. "
+                    "Switching mode may change which actions auto-execute. "
+                    "Re-submit with force=true to proceed, or clear the queue first."
+                ),
+                "pending_sample": [
+                    {"id": p.get("id"), "action_type": p.get("action_type"), "risk_level": p.get("risk_level")}
+                    for p in pending[:5]
+                ],
+            }
+
+    # Cache tier in autonomy_config so tier lock is available without extra DB calls
+    merged_config = {**(body.autonomy_config or {}), "tier": client_tier}
+    updated = update_engagement_mode(engagement_id, body.mode, merged_config)
+    return {
+        "engagement_id": engagement_id,
+        "mode": body.mode,
+        "autonomy_config": merged_config,
+        "tier": client_tier,
+        "warning": False,
+    }
 
 @router.get("/engagement/{engagement_id}/action-queue")
 def list_action_queue(engagement_id: str, status: Optional[str] = None):
@@ -6496,11 +6541,25 @@ def list_action_queue(engagement_id: str, status: Optional[str] = None):
 
 @router.post("/engagement/{engagement_id}/action-queue/{item_id}/approve")
 def approve_queue_item(engagement_id: str, item_id: str):
-    """Approve a pending action queue item (mark as approved/executed)."""
+    """Approve a pending action queue item. Triggers send_portal_update notification."""
     updated = update_queue_item_status(item_id, "approved")
     if not updated:
         raise HTTPException(status_code=404, detail="Queue item not found")
+    # Notify client portal of the approved action
+    _queue_or_execute(
+        engagement_id=engagement_id,
+        action_type="send_portal_update",
+        payload={
+            "trigger": "action_approved",
+            "approved_item_id": item_id,
+            "approved_action_type": updated.get("action_type"),
+            "risk_level": updated.get("risk_level"),
+        },
+        confidence=1.0,
+        source="action_queue_approve",
+    )
     return updated
+
 
 @router.post("/engagement/{engagement_id}/action-queue/{item_id}/reject")
 def reject_queue_item(engagement_id: str, item_id: str):
@@ -6510,9 +6569,10 @@ def reject_queue_item(engagement_id: str, item_id: str):
         raise HTTPException(status_code=404, detail="Queue item not found")
     return updated
 
+
 @router.post("/engagement/{engagement_id}/action-queue/approve-all")
 def approve_all_queue_items(engagement_id: str):
-    """Bulk approve all pending low-risk items for an engagement."""
+    """Bulk approve all pending low-risk items. Triggers a single portal notification."""
     items = get_queue_items(engagement_id, "pending")
     low_risk = [i for i in items if i.get("risk_level") == "low"]
     approved = []
@@ -6520,7 +6580,87 @@ def approve_all_queue_items(engagement_id: str):
         result = update_queue_item_status(item["id"], "approved")
         if result:
             approved.append(result)
+    # Single batched portal notification for the whole approval run
+    if approved:
+        _queue_or_execute(
+            engagement_id=engagement_id,
+            action_type="send_portal_update",
+            payload={
+                "trigger": "bulk_approved",
+                "approved_count": len(approved),
+                "approved_action_types": list({a.get("action_type") for a in approved}),
+            },
+            confidence=1.0,
+            source="action_queue_approve_all",
+        )
     return {"approved": len(approved), "items": approved}
+
+
+# ── Phase 3: Portal live badge, mode switch safety, tier lock ────────────────
+
+@router.get("/engagement/{engagement_id}/portal-status")
+def get_portal_status(engagement_id: str):
+    """Return portal activity badge and last_reviewed_at for this engagement.
+    badge: 'live' (≤7d), 'stale' (7–30d), 'inactive' (>30d or no access).
+    Used by the frontend to display a live indicator on the engagement card.
+    """
+    from database import get_portal_users_by_engagement, get_client_tier
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    users = get_portal_users_by_engagement(engagement_id)
+    now = datetime.now(timezone.utc)
+
+    last_reviewed_at: str | None = None
+    most_recent_user: dict | None = None
+
+    for u in users:
+        ts = u.get("last_access")
+        if ts:
+            if last_reviewed_at is None or ts > last_reviewed_at:
+                last_reviewed_at = ts
+                most_recent_user = u
+
+    # Compute badge
+    badge = "inactive"
+    days_since = None
+    if last_reviewed_at:
+        try:
+            last_dt = datetime.fromisoformat(str(last_reviewed_at).replace("Z", "+00:00"))
+            days_since = (now - last_dt).days
+            badge = "live" if days_since <= 7 else "stale" if days_since <= 30 else "inactive"
+        except (ValueError, TypeError):
+            pass
+
+    # Tier info
+    client_id = eng.get("client_id") or ""
+    client_tier = get_client_tier(client_id) if client_id else "starter"
+
+    return {
+        "engagement_id": engagement_id,
+        "mode": eng.get("mode") or "collaborative",
+        "tier": client_tier,
+        "portal": {
+            "badge": badge,
+            "last_reviewed_at": last_reviewed_at,
+            "days_since_last_access": days_since,
+            "total_portal_users": len(users),
+            "last_reviewer": {
+                "name": most_recent_user.get("name"),
+                "role": most_recent_user.get("role"),
+                "last_access": most_recent_user.get("last_access"),
+            } if most_recent_user else None,
+            "users": [
+                {
+                    "name": u.get("name"),
+                    "role": u.get("role"),
+                    "last_access": u.get("last_access"),
+                }
+                for u in users
+            ],
+        },
+    }
 
 
 # ── Phase 2: Engagement Mode — Digest, Notify, Exception Report ───────────────
@@ -7280,6 +7420,11 @@ _PATTERN_LIBRARY_EXTRA_DDL = """
 ALTER TABLE pattern_library ADD COLUMN IF NOT EXISTS industry_tag text;
 """
 
+_CLIENT_TIER_DDL = """
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS tier text NOT NULL DEFAULT 'starter'
+  CHECK (tier IN ('starter', 'professional', 'enterprise'));
+"""
+
 _NOTIFICATION_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS notification_log (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -7517,6 +7662,7 @@ def run_migrations():
             cur.execute(_AGENT_ACTION_QUEUE_DDL)
             cur.execute(_NOTIFICATION_LOG_DDL)
             cur.execute(_PORTAL_DIGEST_LOG_DDL)
+            cur.execute(_CLIENT_TIER_DDL)
             cur.execute("SELECT COUNT(*) FROM pattern_library")
             if cur.fetchone()[0] == 0:
                 for name, category, content in _PATTERN_SEED:
@@ -7559,6 +7705,7 @@ def run_migrations():
                 + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
                 + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
                 + _AGENT_ACTION_QUEUE_DDL + _NOTIFICATION_LOG_DDL + _PORTAL_DIGEST_LOG_DDL
+                + _CLIENT_TIER_DDL
             ).strip()
             return {
                 "status": "manual_required",
@@ -7574,6 +7721,7 @@ def run_migrations():
         + _ENGAGEMENT_SCOPE_DDL + _SPRINT1_ALTER_DDL + _SOURCES_CONTENT_DDL + _TEST_SCRIPTS_DDL
         + _PORTAL_USERS_DDL + _GO_LIVE_CHECKLIST_DDL + _PATTERN_LIBRARY_EXTRA_DDL
         + _AGENT_ACTION_QUEUE_DDL + _NOTIFICATION_LOG_DDL + _PORTAL_DIGEST_LOG_DDL
+        + _CLIENT_TIER_DDL
     ).strip()
     return {
         "status": "manual_required",
