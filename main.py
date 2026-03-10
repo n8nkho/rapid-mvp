@@ -7529,6 +7529,327 @@ def export_release_readiness(engagement_id: str):
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+# ── Layer 4: Post Go-Live Health Portal ──────────────────────────────────────
+
+class HealthSnapshotRequest(BaseModel):
+    clean_core_score: Optional[float] = None      # 0.0–1.0
+    open_incidents: Optional[int] = 0
+    resolved_incidents: Optional[int] = 0
+    upgrade_readiness_score: Optional[float] = None
+    kpis: Optional[dict] = {}
+    notes: Optional[str] = None
+    snapshot_date: Optional[str] = None           # ISO date, defaults to today
+
+
+@router.post("/engagement/{engagement_id}/record-health-snapshot", status_code=201)
+def record_health_snapshot(engagement_id: str, body: HealthSnapshotRequest):
+    """Record a weekly post-go-live health snapshot."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    snap_date = body.snapshot_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    record = {
+        "engagement_id": engagement_id,
+        "snapshot_date": snap_date,
+        "clean_core_score": body.clean_core_score,
+        "open_incidents": body.open_incidents or 0,
+        "resolved_incidents": body.resolved_incidents or 0,
+        "upgrade_readiness_score": body.upgrade_readiness_score,
+        "kpis": body.kpis or {},
+        "notes": body.notes,
+    }
+    response = supabase.table("golive_health_snapshots").insert(record).execute()
+    snapshot = response.data[0] if response.data else record
+
+    # Auto-enable post_golive_mode if not already set
+    if not eng.get("post_golive_mode"):
+        try:
+            supabase.table("engagements").update({"post_golive_mode": True}).eq("engagement_id", engagement_id).execute()
+        except Exception as exc:
+            logger.warning("post_golive_mode update: %s", exc)
+
+    # Alert if clean_core_score drops below threshold
+    alerts = []
+    if body.clean_core_score is not None and body.clean_core_score < 0.85:
+        alerts.append({"type": "clean_core_degradation",
+                        "message": f"Clean core score {body.clean_core_score:.0%} is below the 85% threshold."})
+    return {**snapshot, "alerts": alerts}
+
+
+@router.get("/engagement/{engagement_id}/health-timeline")
+def get_health_timeline(engagement_id: str, weeks: int = 52):
+    """Return up to 52 weeks of health snapshots with trend direction."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    snapshots = (
+        supabase.table("golive_health_snapshots")
+        .select("*").eq("engagement_id", engagement_id)
+        .order("snapshot_date", desc=True).limit(weeks).execute().data or []
+    )
+    snapshots = list(reversed(snapshots))  # chronological for trend calc
+
+    # Trend: compare last 4 vs previous 4
+    trend = "stable"
+    cc_scores = [s.get("clean_core_score") for s in snapshots if s.get("clean_core_score") is not None]
+    if len(cc_scores) >= 4:
+        recent = sum(cc_scores[-4:]) / 4
+        earlier = sum(cc_scores[-8:-4]) / 4 if len(cc_scores) >= 8 else sum(cc_scores[:4]) / 4
+        if recent > earlier + 0.02:
+            trend = "improving"
+        elif recent < earlier - 0.02:
+            trend = "degrading"
+
+    latest = snapshots[-1] if snapshots else {}
+    clean_core_alert = (
+        latest.get("clean_core_score") is not None
+        and latest.get("clean_core_score") < 0.85
+    )
+
+    return {
+        "engagement_id": engagement_id,
+        "post_golive_mode": eng.get("post_golive_mode") or False,
+        "total_snapshots": len(snapshots),
+        "trend": trend,
+        "clean_core_alert": clean_core_alert,
+        "latest": latest,
+        "timeline": snapshots,
+    }
+
+
+@portal_router.get("/portal/{token}/health")
+def portal_health(token: str):
+    """Public portal: post-go-live health dashboard for the client."""
+    portal_user = get_portal_user_by_token(token)
+    if not portal_user:
+        raise HTTPException(status_code=401, detail="Invalid or expired portal token")
+
+    engagement_id = portal_user.get("engagement_id")
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+    snapshots = (
+        supabase.table("golive_health_snapshots")
+        .select("*").eq("engagement_id", engagement_id)
+        .order("snapshot_date", desc=True).limit(52).execute().data or []
+    )
+    snapshots_chrono = list(reversed(snapshots))
+
+    latest = snapshots[0] if snapshots else {}
+    cc_scores = [s.get("clean_core_score") for s in snapshots_chrono if s.get("clean_core_score") is not None]
+    trend = "stable"
+    if len(cc_scores) >= 4:
+        recent = sum(cc_scores[-4:]) / 4
+        earlier = sum(cc_scores[-8:-4]) / 4 if len(cc_scores) >= 8 else sum(cc_scores[:4]) / 4
+        trend = "improving" if recent > earlier + 0.02 else "degrading" if recent < earlier - 0.02 else "stable"
+
+    # Next release countdown (hardcoded to 2608 for now)
+    next_release_date = "2026-08-01"
+    try:
+        nrd = datetime.fromisoformat(next_release_date)
+        days_to_next_release = (nrd.date() - datetime.now(timezone.utc).date()).days
+    except Exception:
+        days_to_next_release = None
+
+    # Incident sparkline (last 12 weeks)
+    incident_sparkline = [
+        {"date": s.get("snapshot_date"), "open": s.get("open_incidents", 0),
+         "resolved": s.get("resolved_incidents", 0)}
+        for s in snapshots_chrono[-12:]
+    ]
+
+    update_portal_user_last_access(portal_user["id"])
+
+    return {
+        "engagement_id": engagement_id,
+        "client_name": portal_user.get("name"),
+        "post_golive_mode": eng.get("post_golive_mode") or False,
+        "health": {
+            "clean_core_score": latest.get("clean_core_score"),
+            "clean_core_gauge": round((latest.get("clean_core_score") or 0) * 100),
+            "clean_core_status": (
+                "healthy" if (latest.get("clean_core_score") or 0) >= 0.9
+                else "at_risk" if (latest.get("clean_core_score") or 0) >= 0.75
+                else "critical"
+            ),
+            "trend": trend,
+            "open_incidents": latest.get("open_incidents", 0),
+            "upgrade_readiness_score": latest.get("upgrade_readiness_score"),
+            "next_release": "SAP S/4HANA 2608",
+            "next_release_date": next_release_date,
+            "days_to_next_release": days_to_next_release,
+        },
+        "incident_sparkline": incident_sparkline,
+        "kpis": latest.get("kpis") or {},
+        "branding": "Powered by RAPID",
+    }
+
+
+# ── Layer 5: Predictive Gap Intelligence ─────────────────────────────────────
+
+class PredictGapsRequest(BaseModel):
+    industry: str
+    modules: list[str]
+    company_size: str = "mid_market"   # small / mid_market / enterprise
+
+
+@router.post("/engagement/{engagement_id}/predict-gaps", status_code=200)
+def predict_gaps(engagement_id: str, body: PredictGapsRequest):
+    """Use benchmarks + pattern library to predict top gaps, RICEFW count, and risk areas."""
+    from database import get_benchmarks_by_industry
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    industry = body.industry.lower()
+    benchmarks = get_benchmarks_by_industry(industry)
+    bm_overall = {r["metric_name"]: r for r in benchmarks if r["process_area"] == "overall"}
+    bm_by_process = {}
+    for r in benchmarks:
+        if r["process_area"] != "overall":
+            bm_by_process.setdefault(r["process_area"], {})[r["metric_name"]] = r["metric_value"]
+
+    # Pattern library for this industry
+    patterns = (
+        supabase.table("pattern_library")
+        .select("name, category, content, use_count, industry_tag")
+        .eq("industry_tag", industry)
+        .order("use_count", desc=True).limit(20).execute().data or []
+    )
+
+    sample_size = bm_overall.get("avg_gap_rate", {}).get("sample_size", 0)
+    avg_gap_rate = bm_overall.get("avg_gap_rate", {}).get("metric_value", 0.30)
+    avg_ricefw = bm_overall.get("avg_ricefw_count", {}).get("metric_value", 20)
+
+    # Size multiplier
+    size_mult = {"small": 0.7, "mid_market": 1.0, "enterprise": 1.5}.get(body.company_size, 1.0)
+    predicted_ricefw = round(avg_ricefw * size_mult)
+    predicted_ricefw_by_type = {
+        "Reports": max(1, round(predicted_ricefw * 0.35)),
+        "Interfaces": max(1, round(predicted_ricefw * 0.30)),
+        "Conversions": max(1, round(predicted_ricefw * 0.20)),
+        "Enhancements": max(1, round(predicted_ricefw * 0.10)),
+        "Forms": max(1, round(predicted_ricefw * 0.05)),
+    }
+
+    # Module-specific typical gaps
+    module_gap_map = {
+        "FI": ["Multi-currency valuation", "Tax engine integration", "Period close automation",
+               "Revenue recognition per IFRS 15", "Bank statement reconciliation"],
+        "SD": ["Complex pricing / rebates", "Credit management integration", "ATP / availability check",
+               "EDI order integration", "Returns and warranty processing"],
+        "MM": ["Vendor managed inventory", "Purchase order approval workflow",
+               "Integration with procurement portal", "GR/IR clearing automation"],
+        "PP": ["MES / shop floor integration", "Engineering change management",
+               "Capacity planning integration", "Batch / serial number tracking"],
+        "QM": ["Inspection lot automation", "Supplier scorecard", "NCR/CAPA digital workflow"],
+        "WM": ["WMS integration / TM handoff", "Bin-level inventory tracking", "Yard management"],
+    }
+    predicted_gaps = []
+    for module in body.modules:
+        gaps = module_gap_map.get(module.upper(), [])
+        for gap in gaps[:2]:
+            predicted_gaps.append({
+                "module": module.upper(),
+                "gap_description": gap,
+                "confidence": round(0.55 + avg_gap_rate * 0.5, 2),
+                "typical_fit_type": "gap_ricefw",
+                "risk_level": "medium",
+            })
+
+    # Add process-area specific predictions from benchmarks
+    for pa, metrics in bm_by_process.items():
+        pa_gap_rate = metrics.get("avg_gap_rate", 0)
+        if pa_gap_rate > avg_gap_rate * 1.1:  # above-average gap rate for this process
+            predicted_gaps.append({
+                "module": pa,
+                "gap_description": f"Higher-than-average gap rate ({pa_gap_rate:.0%}) expected in {pa} based on {sample_size} similar implementations.",
+                "confidence": round(min(0.92, 0.5 + pa_gap_rate), 2),
+                "typical_fit_type": "gap_ricefw",
+                "risk_level": "high" if pa_gap_rate > 0.35 else "medium",
+            })
+
+    # LLM enrichment (Sonnet for quality predictions)
+    provider = get_provider()
+    bm_context = "\n".join([f"- {k}: {v['metric_value']}" for k, v in bm_overall.items()])
+    pattern_context = "\n".join([f"- {p['name']}: {p['content'][:80]}" for p in patterns[:5]])
+    modules_str = ", ".join(body.modules)
+    prompt = f"""You are a senior SAP S/4HANA consultant. Predict the top 5 gaps most likely for this profile:
+Industry: {body.industry} | Modules: {modules_str} | Size: {body.company_size}
+Industry benchmarks (avg across {sample_size} implementations):
+{bm_context}
+Relevant patterns:
+{pattern_context}
+
+Return ONLY a JSON array of 5 objects: [{{"gap": "...", "module": "...", "risk": "low|medium|high", "confidence": 0.0-1.0, "discovery_question": "..."}}]"""
+    llm_gaps = []
+    try:
+        result = provider.complete(prompt=prompt,
+            system="You are an expert SAP S/4HANA implementation consultant. Return only valid JSON.",
+            max_tokens=600, model=MODEL_SONNET)
+        content = (result.get("content") or "").strip()
+        import re as _re
+        json_match = _re.search(r'\[.*\]', content, _re.DOTALL)
+        if json_match:
+            llm_gaps = json.loads(json_match.group())[:5]
+    except Exception as exc:
+        logger.warning("predict_gaps LLM: %s", exc)
+
+    # Typical go-live timeline
+    avg_days = bm_overall.get("avg_go_live_days", {}).get("metric_value", 140)
+    rapid_days = max(21, round(avg_days * 0.12))  # RAPID is ~12% of traditional
+
+    prediction = {
+        "engagement_id": engagement_id,
+        "profile": {"industry": body.industry, "modules": body.modules, "company_size": body.company_size},
+        "based_on_sample_size": sample_size,
+        "predicted_gap_rate": round(avg_gap_rate, 3),
+        "predicted_ricefw_total": predicted_ricefw,
+        "predicted_ricefw_by_type": predicted_ricefw_by_type,
+        "predicted_timeline": {
+            "traditional_days": round(avg_days),
+            "rapid_days": rapid_days,
+            "velocity_dividend_days": round(avg_days) - rapid_days,
+        },
+        "top_predicted_gaps": (llm_gaps or predicted_gaps[:5]),
+        "module_risk_areas": [
+            {"module": m, "predicted_gap_rate": bm_by_process.get(m, {}).get("avg_gap_rate", avg_gap_rate),
+             "risk_level": "high" if bm_by_process.get(m, {}).get("avg_gap_rate", 0) > 0.35 else "medium"}
+            for m in body.modules
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Persist to engagement (store in action queue as a low-risk advisory record)
+    try:
+        create_queue_item(engagement_id, "run_fitgap", prediction, "low", "auto_executed",
+                          confidence=0.75, source="predict_gaps")
+    except Exception:
+        pass
+
+    return prediction
+
+
+@router.get("/engagement/{engagement_id}/predicted-risk-profile")
+def get_predicted_risk_profile(engagement_id: str):
+    """Return the stored gap prediction for this engagement."""
+    items = get_queue_items(engagement_id)
+    predictions = [i for i in items if i.get("source") == "predict_gaps"]
+    if not predictions:
+        raise HTTPException(status_code=404,
+            detail="No prediction found. Run POST /engagement/{id}/predict-gaps first.")
+    latest = sorted(predictions, key=lambda x: x.get("created_at") or "", reverse=True)[0]
+    return {
+        "engagement_id": engagement_id,
+        "prediction": latest.get("payload") or {},
+        "generated_at": latest.get("created_at"),
+        "status": "predicted",
+    }
+
+
 # ── Phase 3: Portal live badge, mode switch safety, tier lock ────────────────
 
 @router.get("/engagement/{engagement_id}/portal-status")
