@@ -6915,8 +6915,9 @@ class VelocityDividendRequest(BaseModel):
     traditional_timeline_months: float = 12.0
     rapid_timeline_months: float = 1.0
     working_capital_improvement_pct: float = 0.0
-    working_capital_usd: Optional[float] = None   # if provided, used for WC calc
-    client_name: Optional[str] = None             # for PDF branding
+    working_capital_usd: Optional[float] = None        # if provided, used for WC calc
+    implementation_cost_usd: Optional[float] = 150_000 # actual impl spend; default mid-market
+    client_name: Optional[str] = None                  # for PDF branding
 
 
 @router.post("/engagement/{engagement_id}/velocity-dividend")
@@ -6935,11 +6936,10 @@ def velocity_dividend(engagement_id: str, body: VelocityDividendRequest):
     working_capital_benefit = wc_base * (body.working_capital_improvement_pct / 100) * (months_saved / 12)
     total = operational_efficiency_gain + legacy_cost_savings + working_capital_benefit
 
-    # Assume ~10% of annual EBITDA gain is implementation spend proxy for ROI
-    impl_spend_proxy = body.annual_ebitda_usd * 0.01 * (body.rapid_timeline_months / 12) * 500
-    impl_spend_proxy = max(impl_spend_proxy, 50_000)
-    roi_pct = round((total / impl_spend_proxy) * 100, 1) if impl_spend_proxy else 0
-    payback_months = round(impl_spend_proxy / (total / months_saved), 1) if total > 0 and months_saved > 0 else None
+    impl_cost = body.implementation_cost_usd or 150_000
+    roi_pct = round((total / impl_cost) * 100, 1) if impl_cost else 0
+    monthly_dividend = total / months_saved if months_saved > 0 else 0
+    payback_months = round(impl_cost / monthly_dividend, 1) if monthly_dividend > 0 else None
 
     client = get_client(eng.get("client_id") or "")
     client_name = body.client_name or (client or {}).get("name") or "Your organisation"
@@ -6968,6 +6968,7 @@ def velocity_dividend(engagement_id: str, body: VelocityDividendRequest):
             "working_capital_improvement_pct": body.working_capital_improvement_pct,
         },
         "months_saved": months_saved,
+        "implementation_cost_usd": impl_cost,
         "operational_efficiency_gain_usd": round(operational_efficiency_gain, 2),
         "legacy_cost_savings_usd": round(legacy_cost_savings, 2),
         "working_capital_benefit_usd": round(working_capital_benefit, 2),
@@ -6997,6 +6998,7 @@ def velocity_dividend_export(
     traditional_timeline_months: float = 12,
     rapid_timeline_months: float = 1,
     working_capital_improvement_pct: float = 1.2,
+    implementation_cost_usd: float = 150_000,
 ):
     """Generate a 2-page CFO-ready PDF Velocity Dividend report."""
     try:
@@ -7022,7 +7024,7 @@ def velocity_dividend_export(
     legacy_savings = legacy_monthly_cost_usd * months_saved
     wc_benefit = (annual_ebitda_usd * 0.15) * (working_capital_improvement_pct / 100) * (months_saved / 12)
     total = op_gain + legacy_savings + wc_benefit
-    impl_spend = max(50_000, annual_ebitda_usd * 0.01 * (rapid_timeline_months / 12) * 500)
+    impl_spend = implementation_cost_usd or 150_000
     roi_pct = round((total / impl_spend) * 100, 1) if impl_spend else 0
 
     buffer = io.BytesIO()
@@ -7108,7 +7110,7 @@ def velocity_dividend_export(
          f"WC base × {working_capital_improvement_pct}% × ({months_saved:.0f}/12 yr)",
          f"${wc_benefit:,.0f}"],
         ["Total Velocity Dividend", "", f"${total:,.0f}"],
-        ["Estimated Impl. Spend", "Proxy based on scope", f"${impl_spend:,.0f}"],
+        ["Implementation Cost", "Provided by user", f"${impl_spend:,.0f}"],
         ["First-Year ROI", f"${total:,.0f} / ${impl_spend:,.0f}", f"{roi_pct:.0f}%"],
     ]
     calc_table = Table(calc_data, colWidths=[6*cm, 7*cm, 4*cm])
