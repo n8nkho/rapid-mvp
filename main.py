@@ -7148,6 +7148,387 @@ def velocity_dividend_export(
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+# ── Layer 3: Release Readiness Scanner ───────────────────────────────────────
+
+_SAP_RELEASE_SEED = [
+    # API deprecations / breaking changes for 2602 → 2608
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "deprecation",
+     "affected_area": "SD", "affected_scope_items": ["11J", "11K", "11L"],
+     "description": "API_SALES_ORDER_SRV (OData v2) deprecated. Migrate to API_SALES_ORDER_SRV_2 (OData v4).",
+     "migration_guidance": "Replace all API_SALES_ORDER_SRV calls with API_SALES_ORDER_SRV_2. Update RICEFW integrations. Test order-to-cash flows end-to-end.",
+     "severity": "critical"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "breaking_change",
+     "affected_area": "FI", "affected_scope_items": ["1GA", "1GB"],
+     "description": "BAPI_ACC_DOCUMENT_POST: mandatory new field 'DOCUMENT_CATEGORY_CODE' in header segment. Calls without this field will fail.",
+     "migration_guidance": "Add DOCUMENT_CATEGORY_CODE to all BAPI_ACC_DOCUMENT_POST calls. Default value 'RV' for revenue documents.",
+     "severity": "critical"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "api_change",
+     "affected_area": "FI", "affected_scope_items": ["1GA"],
+     "description": "FI-GL posting API: GLACCOUNT_LINEITEM parameter renamed to GL_ACCOUNT_LINE_ITEM. Legacy name still accepted until 2702 but emits deprecation warning.",
+     "migration_guidance": "Update parameter names in all GL posting interfaces. Run integration tests against sandbox before upgrade.",
+     "severity": "high"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "scope_item_change",
+     "affected_area": "MM", "affected_scope_items": ["BMK", "BNX", "BEI"],
+     "description": "Scope items BMK (Inventory Management), BNX (Physical Inventory), BEI (Goods Receipt) renumbered to J45, J46, J47 respectively in process hierarchy.",
+     "migration_guidance": "Update all scope item references in configuration documentation and test scripts. No functional change — cosmetic renumbering only.",
+     "severity": "medium"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "breaking_change",
+     "affected_area": "MM", "affected_scope_items": ["MK", "MK2"],
+     "description": "Vendor master: new mandatory field 'PAYMENT_TERMS_GROUP' required on all vendor records created via API. Existing records unaffected.",
+     "migration_guidance": "Update vendor creation APIs and data migration templates to include PAYMENT_TERMS_GROUP. Default: 'STD' for standard terms.",
+     "severity": "high"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "deprecation",
+     "affected_area": "PP", "affected_scope_items": ["1EE", "1EF"],
+     "description": "BAPI_PRODORD_CREATE deprecated. Use PPH_CREATE_PLANNED_ORDER or API_PLANNED_ORDERS_2.",
+     "migration_guidance": "Migrate production order creation interfaces to API_PLANNED_ORDERS_2. Update RICEFW documentation.",
+     "severity": "high"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "new_feature",
+     "affected_area": "FI", "affected_scope_items": ["1GA", "1GJ"],
+     "description": "New embedded analytics: real-time journal entry dashboard available in FI-GL without BW extraction.",
+     "migration_guidance": "Evaluate if existing reporting RICEFW can be replaced by standard embedded analytics. Reduces custom development scope.",
+     "severity": "low"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "breaking_change",
+     "affected_area": "SD", "affected_scope_items": ["11J"],
+     "description": "Credit management: CreditMgmtAPI v1 retired. Only CreditMgmtAPI v2 with OAuth2 is supported.",
+     "migration_guidance": "Update all credit check interfaces to CreditMgmtAPI v2. Requires OAuth2 client credentials configuration.",
+     "severity": "critical"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "api_change",
+     "affected_area": "MM", "affected_scope_items": ["BNX"],
+     "description": "Purchase order API: PO_ITEM_CI_FLD (customer include) fields now validated strictly — previously ignored unknown fields.",
+     "migration_guidance": "Audit all PO creation payloads and remove unknown CI fields. Test PO creation in pre-production.",
+     "severity": "medium"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "scope_item_change",
+     "affected_area": "QM", "affected_scope_items": ["QM01"],
+     "description": "Quality Management scope item QM01 split into QM01A (Inspection Lots) and QM01B (Usage Decisions) for finer control.",
+     "migration_guidance": "Review QM configuration; ensure both QM01A and QM01B are activated if full QM scope is required.",
+     "severity": "medium"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "breaking_change",
+     "affected_area": "FI", "affected_scope_items": ["1GJ", "1GK"],
+     "description": "Tax determination: TAXCOM structure extended — custom logic accessing TAXCOM by offset will break. Named field access required.",
+     "migration_guidance": "Review all custom tax BAdI implementations. Replace offset-based TAXCOM access with named field references.",
+     "severity": "critical"},
+    {"release_id": "2608", "release_date": "2026-08-01", "change_type": "new_feature",
+     "affected_area": "PP", "affected_scope_items": ["1EE", "1EF", "1EG"],
+     "description": "Production Planning: AI-assisted scheduling now available as standard feature in S/4HANA 2608 (no additional licence).",
+     "migration_guidance": "Evaluate if AI scheduling can replace custom planning enhancements. Potential RICEFW reduction opportunity.",
+     "severity": "low"},
+    {"release_id": "2602", "release_date": "2026-02-01", "change_type": "deprecation",
+     "affected_area": "SD", "affected_scope_items": ["11J", "11K"],
+     "description": "Classic pricing procedure (VOFM) deprecated in favour of Condition Contract Management.",
+     "migration_guidance": "Migrate pricing logic to Condition Contract Management. Engage SAP for migration tooling.",
+     "severity": "high"},
+    {"release_id": "2602", "release_date": "2026-02-01", "change_type": "breaking_change",
+     "affected_area": "FI", "affected_scope_items": ["1GA"],
+     "description": "House bank API: HBAPI_V1 retired. Migrate to API_HOUSE_BANK_ACCOUNT_LINK_SRV.",
+     "migration_guidance": "Update bank connectivity integrations to new API. Test payment runs in sandbox.",
+     "severity": "high"},
+    {"release_id": "2602", "release_date": "2026-02-01", "change_type": "api_change",
+     "affected_area": "MM", "affected_scope_items": ["BMK"],
+     "description": "Material master API: MRM_MIGO_GR_POST parameter 'MOVE_TYPE' values extended — legacy 2-digit codes auto-mapped until 2608.",
+     "migration_guidance": "Update to 3-digit movement type codes in all goods movement interfaces.",
+     "severity": "low"},
+]
+
+
+class ReleaseReadinessScanRequest(BaseModel):
+    target_release: str = "2608"
+
+
+@admin_router.post("/admin/seed-release-changes", status_code=200, dependencies=[Depends(_require_admin_key)])
+def seed_release_changes():
+    """Seed realistic SAP S/4HANA 2602-2608 breaking changes for release readiness scanner."""
+    inserted = 0
+    errors = []
+    for change in _SAP_RELEASE_SEED:
+        try:
+            supabase.table("sap_release_changes").upsert(
+                change, on_conflict="id", ignore_duplicates=False
+            ).execute()
+            inserted += 1
+        except Exception as exc:
+            # Try insert instead
+            try:
+                supabase.table("sap_release_changes").insert(change).execute()
+                inserted += 1
+            except Exception as exc2:
+                errors.append(str(exc2)[:80])
+    return {"seeded": inserted, "errors": errors, "total": len(_SAP_RELEASE_SEED)}
+
+
+@router.post("/engagement/{engagement_id}/release-readiness-scan", status_code=200)
+def release_readiness_scan(engagement_id: str, body: ReleaseReadinessScanRequest):
+    """Scan engagement's scope, RICEFW, and fit/gap against SAP release changes.
+    Returns structured readiness report (0-100 score) saved to release_readiness_reports.
+    """
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    # Fetch release changes for target release
+    release_changes = (
+        supabase.table("sap_release_changes")
+        .select("*").eq("release_id", body.target_release).execute().data or []
+    )
+    if not release_changes:
+        raise HTTPException(status_code=404,
+            detail=f"No release changes found for release {body.target_release}. Run /admin/seed-release-changes first.")
+
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+
+    # Build search corpus
+    ricefw_text = " ".join([
+        f"{r.get('name','')} {r.get('description','')} {r.get('type','')}"
+        for r in ricefw
+    ]).lower()
+    scope_items_in_use: set[str] = set()
+    for a in assessments:
+        si = a.get("sap_scope_item_id") or a.get("sap_scope_item_name") or ""
+        if si:
+            scope_items_in_use.add(si.upper())
+
+    findings = []
+    for change in release_changes:
+        severity = change.get("severity", "medium")
+        affected = [s.upper() for s in (change.get("affected_scope_items") or [])]
+        area = (change.get("affected_area") or "").upper()
+        desc = (change.get("description") or "").lower()
+
+        # Check 1: scope item overlap
+        scope_overlap = scope_items_in_use & set(affected)
+
+        # Check 2: RICEFW keyword match (deprecated API names in RICEFW descriptions)
+        ricefw_keywords = []
+        for kw in ["api_sales_order", "bapi_acc_document", "bapi_prodord", "creditapi",
+                   "hbapi", "taxcom", "vofm", "glaccount_lineitem", "bapi_acc"]:
+            if kw in ricefw_text:
+                ricefw_keywords.append(kw)
+
+        # Check 3: process area match in requirements
+        area_reqs = [r for r in reqs if area in (r.get("business_process") or "").upper()
+                     or area in (r.get("target_system_module") or "").upper()]
+
+        impact_score = 0
+        if scope_overlap:
+            impact_score += 40
+        if ricefw_keywords and area in ricefw_text.upper():
+            impact_score += 35
+        if area_reqs:
+            impact_score += 15
+        if change.get("change_type") in ("breaking_change", "deprecation"):
+            impact_score += 10
+
+        if impact_score > 0 or severity in ("critical", "high"):
+            finding = {
+                "change_id": str(change.get("id") or ""),
+                "release_id": change.get("release_id"),
+                "severity": severity,
+                "change_type": change.get("change_type"),
+                "affected_area": change.get("affected_area"),
+                "description": change.get("description"),
+                "migration_guidance": change.get("migration_guidance"),
+                "engagement_impact": {
+                    "scope_items_affected": list(scope_overlap),
+                    "ricefw_keyword_matches": ricefw_keywords[:3],
+                    "requirements_in_area": len(area_reqs),
+                    "impact_score": impact_score,
+                },
+                "action_required": severity in ("critical", "high"),
+            }
+            findings.append(finding)
+
+    # LLM enhancement for top critical findings (Haiku for speed)
+    top_critical = [f for f in findings if f["severity"] == "critical"][:3]
+    provider = get_provider()
+    for f in top_critical:
+        try:
+            prompt = (
+                f"SAP S/4HANA {body.target_release} breaking change:\n{f['description']}\n\n"
+                f"This engagement has {len(reqs)} requirements in {area} area. "
+                f"Migration guidance: {f['migration_guidance']}\n\n"
+                f"In 2 sentences, explain the specific risk to this SAP implementation project and the priority action."
+            )
+            result = provider.complete(prompt=prompt,
+                system="You are an SAP S/4HANA technical architect advising on release upgrade risk.",
+                max_tokens=120, model=MODEL_HAIKU)
+            f["ai_risk_assessment"] = (result.get("content") or "").strip()
+        except Exception:
+            pass
+
+    # Score: start at 100, deduct by severity
+    deductions = {"critical": 20, "high": 10, "medium": 4, "low": 1}
+    score = 100.0
+    for f in findings:
+        score -= deductions.get(f["severity"], 0)
+    score = max(0.0, score)
+
+    critical_count = sum(1 for f in findings if f["severity"] == "critical")
+    high_count = sum(1 for f in findings if f["severity"] == "high")
+    medium_count = sum(1 for f in findings if f["severity"] == "medium")
+    low_count = sum(1 for f in findings if f["severity"] == "low")
+
+    recommendations = []
+    if critical_count > 0:
+        recommendations.append({"priority": 1, "action": f"Address {critical_count} critical breaking change(s) before upgrade. Create RICEFW remediation items immediately."})
+    if high_count > 0:
+        recommendations.append({"priority": 2, "action": f"Schedule remediation for {high_count} high-severity change(s) in next sprint."})
+    if score >= 80:
+        recommendations.append({"priority": 3, "action": "Engagement is release-ready. Complete regression testing against target release in sandbox."})
+
+    report = {
+        "engagement_id": engagement_id,
+        "release_id": body.target_release,
+        "overall_score": round(score, 1),
+        "critical_count": critical_count,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "low_count": low_count,
+        "findings": findings,
+        "recommendations": recommendations,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "readiness_label": "ready" if score >= 80 else "at_risk" if score >= 60 else "blocked",
+    }
+
+    # Persist
+    try:
+        supabase.table("release_readiness_reports").insert({
+            "engagement_id": engagement_id,
+            "release_id": body.target_release,
+            "overall_score": round(score, 1),
+            "critical_count": critical_count,
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "findings": findings,
+            "recommendations": recommendations,
+        }).execute()
+    except Exception as exc:
+        logger.warning("release_readiness_save: %s", exc)
+
+    return report
+
+
+@router.get("/engagement/{engagement_id}/release-readiness/latest")
+def get_latest_release_readiness(engagement_id: str):
+    """Return the most recent release readiness scan for this engagement."""
+    data = (
+        supabase.table("release_readiness_reports")
+        .select("*").eq("engagement_id", engagement_id)
+        .order("generated_at", desc=True).limit(1).execute().data or []
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="No readiness report found. Run /release-readiness-scan first.")
+    return data[0]
+
+
+@router.get("/engagement/{engagement_id}/release-readiness/export")
+def export_release_readiness(engagement_id: str):
+    """PDF export of release readiness report — RAPID Release Readiness Certificate."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        import io
+    except ImportError:
+        raise HTTPException(status_code=503, detail="reportlab not available")
+
+    data = (
+        supabase.table("release_readiness_reports")
+        .select("*").eq("engagement_id", engagement_id)
+        .order("generated_at", desc=True).limit(1).execute().data or []
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="No readiness report found. Run scan first.")
+    report = data[0]
+
+    eng = get_engagement(engagement_id)
+    client = get_client((eng or {}).get("client_id") or "")
+    client_name = (client or {}).get("name") or "Client"
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm,
+                            leftMargin=2.5*cm, rightMargin=2.5*cm)
+    styles = getSampleStyleSheet()
+    RAPID_BLUE = colors.HexColor("#1E3A5F")
+    RAPID_GOLD = colors.HexColor("#C9A84C")
+    score = report.get("overall_score") or 0
+    score_color = (colors.HexColor("#2E7D32") if score >= 80
+                   else colors.HexColor("#F57F17") if score >= 60
+                   else colors.HexColor("#C62828"))
+
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=20, textColor=RAPID_BLUE, alignment=TA_CENTER)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=13, textColor=RAPID_BLUE, spaceBefore=12, spaceAfter=4)
+    body_s = ParagraphStyle("body", parent=styles["Normal"], fontSize=9, leading=13)
+    center_s = ParagraphStyle("center", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER)
+    big_score = ParagraphStyle("bigscore", parent=styles["Normal"], fontSize=48, textColor=score_color, alignment=TA_CENTER)
+    wm_s = ParagraphStyle("wm", parent=styles["Normal"], fontSize=8, textColor=colors.lightgrey, alignment=TA_CENTER)
+
+    story = []
+    story.append(Paragraph("RAPID Release Readiness Certificate", h1))
+    story.append(Paragraph(f"{client_name}  ·  Release {report.get('release_id')}  ·  {datetime.now(timezone.utc).strftime('%B %Y')}", center_s))
+    story.append(HRFlowable(width="100%", thickness=2, color=RAPID_GOLD, spaceAfter=16))
+    story.append(Paragraph(f"{score:.0f}", big_score))
+    story.append(Paragraph(f"Readiness Score  —  {report.get('readiness_label','').upper()}", center_s))
+    story.append(Spacer(1, 0.5*cm))
+
+    summary_data = [
+        ["Critical", "High", "Medium", "Low"],
+        [str(report.get("critical_count",0)), str(report.get("high_count",0)),
+         str(report.get("medium_count",0)), str(report.get("low_count",0))],
+    ]
+    sev_colors = [colors.HexColor("#C62828"), colors.HexColor("#E65100"),
+                  colors.HexColor("#F57F17"), colors.HexColor("#2E7D32")]
+    t = Table(summary_data, colWidths=[4*cm]*4)
+    t.setStyle(TableStyle([
+        *[("TEXTCOLOR", (i, 0), (i, 0), sev_colors[i]) for i in range(4)],
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#F5F5F5"), colors.white]),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 0.5*cm))
+
+    if report.get("recommendations"):
+        story.append(Paragraph("Recommendations", h2))
+        for rec in report["recommendations"]:
+            story.append(Paragraph(f"<b>{rec.get('priority')}.</b> {rec.get('action')}", body_s))
+            story.append(Spacer(1, 0.2*cm))
+
+    story.append(PageBreak())
+    story.append(Paragraph("Findings Detail", h2))
+    findings = report.get("findings") or []
+    sev_label_colors = {"critical": colors.HexColor("#C62828"), "high": colors.HexColor("#E65100"),
+                        "medium": colors.HexColor("#F57F17"), "low": colors.HexColor("#2E7D32")}
+    for f in findings[:20]:
+        sev = f.get("severity", "medium")
+        story.append(Paragraph(
+            f'<font color="#{sev_label_colors.get(sev, colors.grey).hexval()[2:]}"><b>[{sev.upper()}]</b></font> '
+            f'{f.get("affected_area")} — {f.get("change_type","").replace("_"," ").title()}', body_s))
+        story.append(Paragraph(f.get("description",""), body_s))
+        if f.get("migration_guidance"):
+            story.append(Paragraph(f"<i>Action: {f['migration_guidance']}</i>", body_s))
+        if f.get("ai_risk_assessment"):
+            story.append(Paragraph(f"<i>AI Assessment: {f['ai_risk_assessment']}</i>", body_s))
+        story.append(Spacer(1, 0.3*cm))
+
+    story.append(HRFlowable(width="100%", thickness=1, color=RAPID_GOLD))
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Paragraph(f"Prepared by RAPID  |  {client_name}  |  Confidential  |  Not for external distribution", wm_s))
+
+    doc.build(story)
+    buffer.seek(0)
+    from fastapi.responses import StreamingResponse
+    filename = f"release-readiness-{engagement_id}-{report.get('release_id')}-{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(buffer, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 # ── Phase 3: Portal live badge, mode switch safety, tier lock ────────────────
 
 @router.get("/engagement/{engagement_id}/portal-status")
