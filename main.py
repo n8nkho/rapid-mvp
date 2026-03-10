@@ -7252,10 +7252,17 @@ def seed_release_changes():
     errors = []
     for change in _SAP_RELEASE_SEED:
         try:
-            supabase.table("sap_release_changes").insert(change).execute()
+            supabase.table("sap_release_changes").upsert(
+                change, on_conflict="release_id,description", ignore_duplicates=True
+            ).execute()
             inserted += 1
         except Exception as exc:
-            errors.append(str(exc)[:80])
+            # Fallback: plain insert (pre-migration without unique index)
+            try:
+                supabase.table("sap_release_changes").insert(change).execute()
+                inserted += 1
+            except Exception as exc2:
+                errors.append(str(exc2)[:80])
     return {"seeded": inserted, "errors": errors, "total": len(_SAP_RELEASE_SEED)}
 
 
