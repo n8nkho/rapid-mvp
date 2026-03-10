@@ -6905,6 +6905,249 @@ def seed_benchmarks(engagement_id: str):
     return {"seeded": seeded, "industries": list(_BENCHMARK_SEED.keys()), "status": "ok"}
 
 
+# ── Layer 2: Velocity Dividend Calculator ────────────────────────────────────
+
+class VelocityDividendRequest(BaseModel):
+    annual_ebitda_usd: float
+    ebitda_improvement_pct: float
+    legacy_monthly_cost_usd: float
+    traditional_timeline_months: float = 12.0
+    rapid_timeline_months: float = 1.0
+    working_capital_improvement_pct: float = 0.0
+    working_capital_usd: Optional[float] = None   # if provided, used for WC calc
+    client_name: Optional[str] = None             # for PDF branding
+
+
+@router.post("/engagement/{engagement_id}/velocity-dividend")
+def velocity_dividend(engagement_id: str, body: VelocityDividendRequest):
+    """Calculate and return velocity dividend breakdown with CFO narrative."""
+    from database import upsert_engagement_outcome
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    months_saved = max(0.0, body.traditional_timeline_months - body.rapid_timeline_months)
+    annual_ebitda_gain = body.annual_ebitda_usd * (body.ebitda_improvement_pct / 100)
+    operational_efficiency_gain = annual_ebitda_gain * (months_saved / 12)
+    legacy_cost_savings = body.legacy_monthly_cost_usd * months_saved
+    wc_base = body.working_capital_usd or body.annual_ebitda_usd * 0.15
+    working_capital_benefit = wc_base * (body.working_capital_improvement_pct / 100) * (months_saved / 12)
+    total = operational_efficiency_gain + legacy_cost_savings + working_capital_benefit
+
+    # Assume ~10% of annual EBITDA gain is implementation spend proxy for ROI
+    impl_spend_proxy = body.annual_ebitda_usd * 0.01 * (body.rapid_timeline_months / 12) * 500
+    impl_spend_proxy = max(impl_spend_proxy, 50_000)
+    roi_pct = round((total / impl_spend_proxy) * 100, 1) if impl_spend_proxy else 0
+    payback_months = round(impl_spend_proxy / (total / months_saved), 1) if total > 0 and months_saved > 0 else None
+
+    client = get_client(eng.get("client_id") or "")
+    client_name = body.client_name or (client or {}).get("name") or "Your organisation"
+    fiscal_year = datetime.now(timezone.utc).year
+
+    cfo_summary = (
+        f"By going live {months_saved:.0f} months earlier, {client_name} captures "
+        f"${operational_efficiency_gain:,.0f} in incremental EBITDA in the current fiscal year "
+        f"— before accounting for Year 2+ compounding benefits."
+    )
+    board_point = (
+        f"The {body.rapid_timeline_months:.0f}-month implementation sprint generated a "
+        f"${total:,.0f} Velocity Dividend, equivalent to a {roi_pct:.0f}% first-year ROI "
+        f"on implementation spend."
+    )
+
+    result = {
+        "engagement_id": engagement_id,
+        "client_name": client_name,
+        "inputs": {
+            "annual_ebitda_usd": body.annual_ebitda_usd,
+            "ebitda_improvement_pct": body.ebitda_improvement_pct,
+            "legacy_monthly_cost_usd": body.legacy_monthly_cost_usd,
+            "traditional_timeline_months": body.traditional_timeline_months,
+            "rapid_timeline_months": body.rapid_timeline_months,
+            "working_capital_improvement_pct": body.working_capital_improvement_pct,
+        },
+        "months_saved": months_saved,
+        "operational_efficiency_gain_usd": round(operational_efficiency_gain, 2),
+        "legacy_cost_savings_usd": round(legacy_cost_savings, 2),
+        "working_capital_benefit_usd": round(working_capital_benefit, 2),
+        "total_velocity_dividend_usd": round(total, 2),
+        "annualized_roi_pct": roi_pct,
+        "payback_months": payback_months,
+        "cfo_summary": cfo_summary,
+        "board_talking_point": board_point,
+        "calculated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Persist to engagement_outcomes
+    try:
+        upsert_engagement_outcome(engagement_id, {"velocity_dividend_usd": round(total, 2)})
+    except Exception as exc:
+        logger.warning("velocity_dividend outcome save: %s", exc)
+
+    return result
+
+
+@router.get("/engagement/{engagement_id}/velocity-dividend/export")
+def velocity_dividend_export(
+    engagement_id: str,
+    annual_ebitda_usd: float = 50_000_000,
+    ebitda_improvement_pct: float = 2.5,
+    legacy_monthly_cost_usd: float = 45_000,
+    traditional_timeline_months: float = 12,
+    rapid_timeline_months: float = 1,
+    working_capital_improvement_pct: float = 1.2,
+):
+    """Generate a 2-page CFO-ready PDF Velocity Dividend report."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        import io
+    except ImportError:
+        raise HTTPException(status_code=503, detail="reportlab not available — add to requirements.txt")
+
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+    client = get_client(eng.get("client_id") or "")
+    client_name = (client or {}).get("name") or "Client"
+
+    # Recalculate
+    months_saved = max(0.0, traditional_timeline_months - rapid_timeline_months)
+    op_gain = annual_ebitda_usd * (ebitda_improvement_pct / 100) * (months_saved / 12)
+    legacy_savings = legacy_monthly_cost_usd * months_saved
+    wc_benefit = (annual_ebitda_usd * 0.15) * (working_capital_improvement_pct / 100) * (months_saved / 12)
+    total = op_gain + legacy_savings + wc_benefit
+    impl_spend = max(50_000, annual_ebitda_usd * 0.01 * (rapid_timeline_months / 12) * 500)
+    roi_pct = round((total / impl_spend) * 100, 1) if impl_spend else 0
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            topMargin=2*cm, bottomMargin=2*cm,
+                            leftMargin=2.5*cm, rightMargin=2.5*cm)
+    styles = getSampleStyleSheet()
+
+    RAPID_BLUE = colors.HexColor("#1E3A5F")
+    RAPID_GOLD = colors.HexColor("#C9A84C")
+    LIGHT_GREY = colors.HexColor("#F5F5F5")
+
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=22, textColor=RAPID_BLUE,
+                         spaceAfter=6, alignment=TA_CENTER)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=14, textColor=RAPID_BLUE,
+                         spaceBefore=14, spaceAfter=4)
+    body_s = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=14)
+    big_num = ParagraphStyle("bignum", parent=styles["Normal"], fontSize=32, textColor=RAPID_BLUE,
+                              alignment=TA_CENTER, spaceAfter=2)
+    label_s = ParagraphStyle("label", parent=styles["Normal"], fontSize=9, textColor=colors.grey,
+                              alignment=TA_CENTER)
+    watermark_s = ParagraphStyle("wm", parent=styles["Normal"], fontSize=8, textColor=colors.lightgrey,
+                                  alignment=TA_CENTER)
+
+    story = []
+
+    # ── Page 1: Executive Summary ─────────────────────────────────────────────
+    story.append(Paragraph("RAPID | Velocity Dividend Report", h1))
+    story.append(Paragraph(f"{client_name} · {datetime.now(timezone.utc).strftime('%B %Y')}", label_s))
+    story.append(HRFlowable(width="100%", thickness=2, color=RAPID_GOLD, spaceAfter=20))
+
+    # Key numbers in 3 columns
+    kpi_data = [
+        [Paragraph(f"${total:,.0f}", big_num),
+         Paragraph(f"{months_saved:.0f}", big_num),
+         Paragraph(f"{roi_pct:.0f}%", big_num)],
+        [Paragraph("Total Velocity Dividend", label_s),
+         Paragraph("Months Saved", label_s),
+         Paragraph("First-Year ROI", label_s)],
+    ]
+    kpi_table = Table(kpi_data, colWidths=[5*cm, 5*cm, 5*cm])
+    kpi_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GREY),
+        ("ROWPADDING", (0, 0), (-1, -1), 12),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+    ]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 0.5*cm))
+
+    story.append(Paragraph("Executive Summary", h2))
+    story.append(Paragraph(
+        f"By deploying SAP S/4HANA in <b>{rapid_timeline_months:.0f} month(s)</b> rather than the "
+        f"industry-standard <b>{traditional_timeline_months:.0f} months</b>, {client_name} captures "
+        f"<b>${total:,.0f}</b> in direct economic value — the Velocity Dividend.", body_s))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph(
+        f"The <b>${op_gain:,.0f}</b> operational efficiency gain represents "
+        f"{ebitda_improvement_pct:.1f}% EBITDA improvement realised {months_saved:.0f} months earlier. "
+        f"Combined with <b>${legacy_savings:,.0f}</b> in avoided legacy system costs and "
+        f"<b>${wc_benefit:,.0f}</b> in working capital improvement, the total return on "
+        f"implementation spend is <b>{roi_pct:.0f}%</b> in year one alone.", body_s))
+
+    story.append(Spacer(1, 1*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=LIGHT_GREY))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("Prepared by RAPID  |  Confidential  |  Not for external distribution", watermark_s))
+
+    # ── Page 2: Detailed calculation ─────────────────────────────────────────
+    from reportlab.platypus import PageBreak
+    story.append(PageBreak())
+    story.append(Paragraph("Calculation Detail & Assumptions", h2))
+
+    calc_data = [
+        ["Component", "Formula", "Value"],
+        ["Operational Efficiency Gain",
+         f"${annual_ebitda_usd:,.0f} × {ebitda_improvement_pct}% × ({months_saved:.0f}/12 yr)",
+         f"${op_gain:,.0f}"],
+        ["Legacy System Savings",
+         f"${legacy_monthly_cost_usd:,.0f}/mo × {months_saved:.0f} months",
+         f"${legacy_savings:,.0f}"],
+        ["Working Capital Benefit",
+         f"WC base × {working_capital_improvement_pct}% × ({months_saved:.0f}/12 yr)",
+         f"${wc_benefit:,.0f}"],
+        ["Total Velocity Dividend", "", f"${total:,.0f}"],
+        ["Estimated Impl. Spend", "Proxy based on scope", f"${impl_spend:,.0f}"],
+        ["First-Year ROI", f"${total:,.0f} / ${impl_spend:,.0f}", f"{roi_pct:.0f}%"],
+    ]
+    calc_table = Table(calc_data, colWidths=[6*cm, 7*cm, 4*cm])
+    calc_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), RAPID_BLUE),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GREY]),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("BACKGROUND", (0, -3), (-1, -3), colors.HexColor("#E8F0FE")),
+        ("FONTNAME", (0, -3), (-1, -3), "Helvetica-Bold"),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(calc_table)
+    story.append(Spacer(1, 0.5*cm))
+    story.append(Paragraph("Methodology Note", h2))
+    story.append(Paragraph(
+        "The Velocity Dividend is calculated as the net present economic benefit of compressing "
+        "the implementation timeline. Operational efficiency gain represents EBITDA improvement "
+        "recognised earlier; legacy savings represent direct cost avoidance; working capital benefit "
+        "represents cash freed through faster process optimisation. ROI is calculated against an "
+        "estimated implementation spend proxy — actual spend may vary. This report is indicative "
+        "and should be validated with the client's finance team before board presentation.", body_s))
+    story.append(Spacer(1, 1.5*cm))
+    story.append(HRFlowable(width="100%", thickness=2, color=RAPID_GOLD))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph(
+        f"Prepared by RAPID  |  {client_name}  |  {datetime.now(timezone.utc).strftime('%d %B %Y')}  |  Confidential",
+        watermark_s))
+
+    doc.build(story)
+    buffer.seek(0)
+
+    from fastapi.responses import StreamingResponse
+    filename = f"velocity-dividend-{engagement_id}-{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(buffer, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 # ── Phase 3: Portal live badge, mode switch safety, tier lock ────────────────
 
 @router.get("/engagement/{engagement_id}/portal-status")
