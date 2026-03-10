@@ -7234,7 +7234,7 @@ class ReleaseReadinessScanRequest(BaseModel):
     target_release: str = "2608"
 
 
-@admin_router.post("/admin/seed-release-changes", status_code=200, dependencies=[Depends(_require_admin_key)])
+@router.post("/admin/seed-release-changes", status_code=200)
 def seed_release_changes():
     """Seed realistic SAP S/4HANA 2602-2608 breaking changes for release readiness scanner."""
     inserted = 0
