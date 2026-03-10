@@ -1270,16 +1270,21 @@ def get_portal_users_by_engagement(engagement_id: str) -> list:
 
 
 def get_client_tier(client_id: str) -> str:
-    """Return client tier (starter|professional|enterprise). Defaults to 'starter'."""
-    response = (
-        supabase.table("clients")
-        .select("tier")
-        .eq("client_id", client_id)
-        .limit(1)
-        .execute()
-    )
-    data = response.data or []
-    return (data[0].get("tier") or "starter") if data else "starter"
+    """Return client tier (starter|professional|enterprise). Defaults to 'starter'.
+    Handles missing tier column gracefully until migration is run.
+    """
+    try:
+        response = (
+            supabase.table("clients")
+            .select("tier")
+            .eq("client_id", client_id)
+            .limit(1)
+            .execute()
+        )
+        data = response.data or []
+        return (data[0].get("tier") or "starter") if data else "starter"
+    except Exception:
+        return "starter"
 
 
 def create_notification_log_entry(
