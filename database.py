@@ -1307,6 +1307,87 @@ def create_notification_log_entry(
     return response.data[0] if response.data else {}
 
 
+# ── Layer 1: Industry Benchmark Engine ───────────────────────────────────────
+
+def upsert_benchmark(industry: str, process_area: str, metric_name: str,
+                     new_value: float, sample_delta: int = 1) -> dict:
+    """Upsert benchmark using rolling average: new_avg = (old*n + new) / (n+1)."""
+    existing = (
+        supabase.table("industry_benchmarks")
+        .select("metric_value, sample_size")
+        .eq("industry", industry).eq("process_area", process_area).eq("metric_name", metric_name)
+        .limit(1).execute().data or []
+    )
+    if existing:
+        old = existing[0]
+        n = old["sample_size"]
+        rolling_avg = (old["metric_value"] * n + new_value) / (n + sample_delta)
+        response = (
+            supabase.table("industry_benchmarks")
+            .update({"metric_value": rolling_avg, "sample_size": n + sample_delta,
+                     "last_updated": datetime.now(timezone.utc).isoformat()})
+            .eq("industry", industry).eq("process_area", process_area).eq("metric_name", metric_name)
+            .execute()
+        )
+    else:
+        response = (
+            supabase.table("industry_benchmarks")
+            .insert({"industry": industry, "process_area": process_area,
+                     "metric_name": metric_name, "metric_value": new_value,
+                     "sample_size": sample_delta})
+            .execute()
+        )
+    return response.data[0] if response.data else {}
+
+
+def get_benchmarks_by_industry(industry: str) -> list:
+    return (
+        supabase.table("industry_benchmarks")
+        .select("*").eq("industry", industry)
+        .order("process_area").execute().data or []
+    )
+
+
+def upsert_engagement_outcome(engagement_id: str, data: dict) -> dict:
+    existing = (
+        supabase.table("engagement_outcomes")
+        .select("id").eq("engagement_id", engagement_id).limit(1).execute().data or []
+    )
+    if existing:
+        response = (
+            supabase.table("engagement_outcomes")
+            .update({**data, "outcome_recorded_at": datetime.now(timezone.utc).isoformat()})
+            .eq("engagement_id", engagement_id).execute()
+        )
+    else:
+        response = (
+            supabase.table("engagement_outcomes")
+            .insert({"engagement_id": engagement_id, **data}).execute()
+        )
+    return response.data[0] if response.data else {}
+
+
+def get_engagement_outcome(engagement_id: str) -> dict | None:
+    data = (
+        supabase.table("engagement_outcomes")
+        .select("*").eq("engagement_id", engagement_id).limit(1).execute().data or []
+    )
+    return data[0] if data else None
+
+
+def add_pattern_tags_to_requirement(req_id: str, tags: list) -> None:
+    try:
+        existing = (
+            supabase.table("requirements")
+            .select("pattern_tags").eq("req_id", req_id).limit(1).execute().data or []
+        )
+        current = existing[0].get("pattern_tags") or [] if existing else []
+        merged = list(set(current + tags))
+        supabase.table("requirements").update({"pattern_tags": merged}).eq("req_id", req_id).execute()
+    except Exception as exc:
+        import logging; logging.getLogger("rapid").warning("pattern_tags update failed: %s", exc)
+
+
 def create_portal_digest_log(engagement_id: str, digest: dict, run_mode: str = "manual") -> dict:
     record = {
         "engagement_id": engagement_id,

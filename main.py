@@ -4354,6 +4354,15 @@ def fit_gap_assess(req_id: str, engagement_id: str):
         _queue_or_execute(engagement_id, "generate_ricefw",
             {"req_id": req_id, "fit_type": fit_type_val, "gap_description": req.get("description", "")},
             source="fitgap_result")
+    # Layer 1: pattern tagging — auto-tag requirement when gap is identified
+    if fit_type_val in ("gap_ricefw", "gap_companion"):
+        try:
+            from database import add_pattern_tags_to_requirement
+            process_area = req.get("business_process") or ""
+            tags = _PROCESS_AREA_TAGS.get(process_area, [f"{process_area.lower().replace(' ','-').replace('/','-')}_gap"])
+            add_pattern_tags_to_requirement(req_id, tags)
+        except Exception as _tag_exc:
+            logger.warning("pattern_tag_failed: %s", _tag_exc)
     return assessment
 
 
@@ -6594,6 +6603,306 @@ def approve_all_queue_items(engagement_id: str):
             source="action_queue_approve_all",
         )
     return {"approved": len(approved), "items": approved}
+
+
+# ── Layer 1: Industry Benchmark Engine ───────────────────────────────────────
+
+_PROCESS_AREA_TAGS: dict[str, list[str]] = {
+    "Order-to-Cash":   ["otc_gap", "revenue_risk", "integration_needed"],
+    "Procure-to-Pay":  ["p2p_gap", "vendor_risk", "approval_workflow"],
+    "Record-to-Report": ["rtr_gap", "finance_risk", "reporting_complexity"],
+    "Plan-to-Produce": ["mfg_gap", "production_risk", "scheduling_complexity"],
+    "Hire-to-Retire":  ["hr_gap", "payroll_risk"],
+    "Warehouse":       ["wm_gap", "inventory_risk"],
+    "Quality":         ["qm_gap", "compliance_risk"],
+    "Service":         ["sm_gap", "service_risk"],
+    "Asset Management": ["am_gap", "maintenance_risk"],
+}
+
+_BENCHMARK_SEED: dict[str, list[dict]] = {
+    "retail": [
+        # overall
+        {"process_area": "overall", "metric_name": "avg_gap_rate",      "metric_value": 0.28, "sample_size": 47},
+        {"process_area": "overall", "metric_name": "avg_fit_rate",       "metric_value": 0.65, "sample_size": 47},
+        {"process_area": "overall", "metric_name": "avg_ricefw_count",   "metric_value": 18.0, "sample_size": 47},
+        {"process_area": "overall", "metric_name": "avg_go_live_days",   "metric_value": 120.0, "sample_size": 47},
+        {"process_area": "overall", "metric_name": "p25_gap_rate",       "metric_value": 0.18, "sample_size": 47},
+        {"process_area": "overall", "metric_name": "p75_gap_rate",       "metric_value": 0.39, "sample_size": 47},
+        # by process
+        {"process_area": "Order-to-Cash",   "metric_name": "avg_gap_rate", "metric_value": 0.22, "sample_size": 47},
+        {"process_area": "Procure-to-Pay",  "metric_name": "avg_gap_rate", "metric_value": 0.31, "sample_size": 47},
+        {"process_area": "Record-to-Report","metric_name": "avg_gap_rate", "metric_value": 0.17, "sample_size": 47},
+        {"process_area": "Warehouse",       "metric_name": "avg_gap_rate", "metric_value": 0.35, "sample_size": 47},
+    ],
+    "manufacturing": [
+        {"process_area": "overall", "metric_name": "avg_gap_rate",      "metric_value": 0.34, "sample_size": 63},
+        {"process_area": "overall", "metric_name": "avg_fit_rate",       "metric_value": 0.58, "sample_size": 63},
+        {"process_area": "overall", "metric_name": "avg_ricefw_count",   "metric_value": 24.0, "sample_size": 63},
+        {"process_area": "overall", "metric_name": "avg_go_live_days",   "metric_value": 150.0, "sample_size": 63},
+        {"process_area": "overall", "metric_name": "p25_gap_rate",       "metric_value": 0.23, "sample_size": 63},
+        {"process_area": "overall", "metric_name": "p75_gap_rate",       "metric_value": 0.46, "sample_size": 63},
+        {"process_area": "Plan-to-Produce", "metric_name": "avg_gap_rate", "metric_value": 0.42, "sample_size": 63},
+        {"process_area": "Procure-to-Pay",  "metric_name": "avg_gap_rate", "metric_value": 0.29, "sample_size": 63},
+        {"process_area": "Record-to-Report","metric_name": "avg_gap_rate", "metric_value": 0.21, "sample_size": 63},
+        {"process_area": "Quality",         "metric_name": "avg_gap_rate", "metric_value": 0.38, "sample_size": 63},
+    ],
+    "pharma": [
+        {"process_area": "overall", "metric_name": "avg_gap_rate",      "metric_value": 0.19, "sample_size": 28},
+        {"process_area": "overall", "metric_name": "avg_fit_rate",       "metric_value": 0.72, "sample_size": 28},
+        {"process_area": "overall", "metric_name": "avg_ricefw_count",   "metric_value": 12.0, "sample_size": 28},
+        {"process_area": "overall", "metric_name": "avg_go_live_days",   "metric_value": 180.0, "sample_size": 28},
+        {"process_area": "overall", "metric_name": "p25_gap_rate",       "metric_value": 0.12, "sample_size": 28},
+        {"process_area": "overall", "metric_name": "p75_gap_rate",       "metric_value": 0.27, "sample_size": 28},
+        {"process_area": "Quality",         "metric_name": "avg_gap_rate", "metric_value": 0.14, "sample_size": 28},
+        {"process_area": "Record-to-Report","metric_name": "avg_gap_rate", "metric_value": 0.11, "sample_size": 28},
+        {"process_area": "Order-to-Cash",   "metric_name": "avg_gap_rate", "metric_value": 0.22, "sample_size": 28},
+    ],
+    "logistics": [
+        {"process_area": "overall", "metric_name": "avg_gap_rate",      "metric_value": 0.31, "sample_size": 35},
+        {"process_area": "overall", "metric_name": "avg_fit_rate",       "metric_value": 0.61, "sample_size": 35},
+        {"process_area": "overall", "metric_name": "avg_ricefw_count",   "metric_value": 20.0, "sample_size": 35},
+        {"process_area": "overall", "metric_name": "avg_go_live_days",   "metric_value": 135.0, "sample_size": 35},
+        {"process_area": "overall", "metric_name": "p25_gap_rate",       "metric_value": 0.20, "sample_size": 35},
+        {"process_area": "overall", "metric_name": "p75_gap_rate",       "metric_value": 0.43, "sample_size": 35},
+        {"process_area": "Warehouse",       "metric_name": "avg_gap_rate", "metric_value": 0.37, "sample_size": 35},
+        {"process_area": "Order-to-Cash",   "metric_name": "avg_gap_rate", "metric_value": 0.28, "sample_size": 35},
+        {"process_area": "Procure-to-Pay",  "metric_name": "avg_gap_rate", "metric_value": 0.26, "sample_size": 35},
+    ],
+}
+
+
+class RecordOutcomeRequest(BaseModel):
+    go_live_days: Optional[int] = None
+    planned_ebitda_improvement_pct: Optional[float] = None
+    annual_ebitda_usd: Optional[float] = None
+    legacy_system_cost_monthly: Optional[float] = None
+    traditional_timeline_months: Optional[float] = 12
+    rapid_timeline_months: Optional[float] = 1
+
+
+def _update_benchmarks_from_engagement(engagement_id: str, industry: str) -> None:
+    """Refresh industry_benchmarks with anonymized stats from this engagement."""
+    from database import upsert_benchmark
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+
+    total = len(reqs)
+    if total == 0:
+        return
+    gap_types = {"gap_ricefw", "gap_companion"}
+    fit_types = {"fit_standard", "fit_config", "fit_extension"}
+    gaps = [a for a in assessments if a.get("fit_type") in gap_types]
+    fits = [a for a in assessments if a.get("fit_type") in fit_types]
+    gap_rate = len(gaps) / total
+    fit_rate = len(fits) / total
+
+    upsert_benchmark(industry, "overall", "avg_gap_rate", gap_rate)
+    upsert_benchmark(industry, "overall", "avg_fit_rate", fit_rate)
+    upsert_benchmark(industry, "overall", "avg_ricefw_count", float(len(ricefw)))
+
+    # Per-process-area gap rates
+    process_gaps: dict[str, list] = {}
+    process_total: dict[str, int] = {}
+    for a in assessments:
+        req = next((r for r in reqs if r.get("req_id") == a.get("req_id")), {})
+        pa = req.get("business_process") or "Unknown"
+        process_total[pa] = process_total.get(pa, 0) + 1
+        if a.get("fit_type") in gap_types:
+            process_gaps.setdefault(pa, []).append(a)
+    for pa, total_pa in process_total.items():
+        if total_pa >= 3:
+            pa_gap_rate = len(process_gaps.get(pa, [])) / total_pa
+            upsert_benchmark(industry, pa, "avg_gap_rate", pa_gap_rate)
+
+
+@router.post("/engagement/{engagement_id}/record-outcome", status_code=200)
+def record_outcome(engagement_id: str, body: RecordOutcomeRequest):
+    """Record engagement outcome and refresh industry benchmarks (anonymized)."""
+    from database import upsert_engagement_outcome, get_client
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+    gap_types = {"gap_ricefw", "gap_companion"}
+    fit_types = {"fit_standard", "fit_config", "fit_extension"}
+
+    total = len(reqs)
+    gap_count = len([a for a in assessments if a.get("fit_type") in gap_types])
+    fit_count = len([a for a in assessments if a.get("fit_type") in fit_types])
+
+    # Velocity dividend calculation
+    velocity_dividend = None
+    if body.annual_ebitda_usd and body.planned_ebitda_improvement_pct:
+        months_saved = (body.traditional_timeline_months or 12) - (body.rapid_timeline_months or 1)
+        months_saved = max(0, months_saved)
+        ebitda_gain = body.annual_ebitda_usd * (body.planned_ebitda_improvement_pct / 100) * (months_saved / 12)
+        legacy_savings = (body.legacy_system_cost_monthly or 0) * months_saved
+        velocity_dividend = ebitda_gain + legacy_savings
+
+    client = get_client(eng.get("client_id") or "")
+    industry = (client or {}).get("industry") or "unknown"
+
+    outcome_data = {
+        "industry": industry,
+        "total_requirements": total,
+        "fit_count": fit_count,
+        "gap_count": gap_count,
+        "ricefw_count": len(ricefw),
+        "go_live_days": body.go_live_days,
+        "velocity_dividend_usd": velocity_dividend,
+    }
+    outcome = upsert_engagement_outcome(engagement_id, outcome_data)
+
+    # Refresh benchmarks asynchronously (best-effort)
+    try:
+        _update_benchmarks_from_engagement(engagement_id, industry)
+        if body.go_live_days:
+            from database import upsert_benchmark
+            upsert_benchmark(industry, "overall", "avg_go_live_days", float(body.go_live_days))
+    except Exception as exc:
+        logger.warning("benchmark_update_failed: %s", exc)
+
+    return {**outcome, "velocity_dividend_usd": velocity_dividend,
+            "benchmarks_updated": True, "industry": industry}
+
+
+@router.get("/benchmarks/{industry}")
+def get_benchmarks(industry: str):
+    """Return all benchmark metrics for an industry with sample sizes."""
+    from database import get_benchmarks_by_industry
+    rows = get_benchmarks_by_industry(industry.lower())
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No benchmarks found for industry '{industry}'. Run seed-benchmarks first.")
+
+    # Structure: overall metrics + per-process-area breakdown
+    overall = {r["metric_name"]: {"value": r["metric_value"], "sample_size": r["sample_size"]}
+               for r in rows if r["process_area"] == "overall"}
+    by_process: dict[str, dict] = {}
+    for r in rows:
+        if r["process_area"] != "overall":
+            by_process.setdefault(r["process_area"], {})[r["metric_name"]] = {
+                "value": r["metric_value"], "sample_size": r["sample_size"]
+            }
+    return {
+        "industry": industry,
+        "overall": overall,
+        "by_process_area": by_process,
+        "total_metrics": len(rows),
+    }
+
+
+@router.get("/engagement/{engagement_id}/benchmark-comparison")
+def get_benchmark_comparison(engagement_id: str):
+    """Compare this engagement's stats against industry benchmarks with percentile scores."""
+    from database import get_benchmarks_by_industry
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail=f"Engagement {engagement_id} not found")
+
+    reqs = get_requirements_by_engagement(engagement_id)
+    assessments = get_fit_gap_by_engagement(engagement_id)
+    ricefw = get_ricefw_by_engagement(engagement_id)
+    client = get_client(eng.get("client_id") or "")
+    industry = (client or {}).get("industry") or "unknown"
+
+    total = len(reqs)
+    gap_types = {"gap_ricefw", "gap_companion"}
+    fit_types = {"fit_standard", "fit_config", "fit_extension"}
+    gap_count = len([a for a in assessments if a.get("fit_type") in gap_types])
+    fit_count = len([a for a in assessments if a.get("fit_type") in fit_types])
+    gap_rate = gap_count / total if total else 0
+    fit_rate = fit_count / total if total else 0
+
+    benchmarks = get_benchmarks_by_industry(industry.lower())
+    bm = {r["metric_name"]: r for r in benchmarks if r["process_area"] == "overall"}
+
+    def _percentile(value: float, avg: float, p25: float, p75: float, lower_is_better: bool = False) -> int:
+        """Estimate percentile given avg and p25/p75 anchors."""
+        if lower_is_better:
+            if value <= p25: return 90
+            if value <= avg: return 70
+            if value <= p75: return 40
+            return 15
+        else:
+            if value >= p75: return 90
+            if value >= avg: return 65
+            if value >= p25: return 40
+            return 15
+
+    comparisons = []
+    if "avg_gap_rate" in bm:
+        avg_gap = bm["avg_gap_rate"]["metric_value"]
+        p25_gap = bm.get("p25_gap_rate", {}).get("metric_value", avg_gap * 0.65)
+        p75_gap = bm.get("p75_gap_rate", {}).get("metric_value", avg_gap * 1.35)
+        pct = _percentile(gap_rate, avg_gap, p25_gap, p75_gap, lower_is_better=True)
+        comparisons.append({
+            "metric": "gap_rate",
+            "your_value": round(gap_rate, 3),
+            "industry_avg": round(avg_gap, 3),
+            "percentile": pct,
+            "direction": "lower_is_better",
+            "insight": (
+                f"Your gap rate ({gap_rate:.0%}) is {'better than' if gap_rate < avg_gap else 'above'} "
+                f"the {industry} industry average ({avg_gap:.0%}). "
+                f"You're in the top {100 - pct}% of {industry} implementations."
+                if gap_rate < avg_gap else
+                f"Your gap rate ({gap_rate:.0%}) exceeds the {industry} average ({avg_gap:.0%}). "
+                f"Consider prioritising gap resolution before go-live."
+            ),
+        })
+    if "avg_fit_rate" in bm:
+        avg_fit = bm["avg_fit_rate"]["metric_value"]
+        pct_fit = _percentile(fit_rate, avg_fit, avg_fit * 0.8, avg_fit * 1.15)
+        comparisons.append({
+            "metric": "fit_rate",
+            "your_value": round(fit_rate, 3),
+            "industry_avg": round(avg_fit, 3),
+            "percentile": pct_fit,
+            "direction": "higher_is_better",
+            "insight": (
+                f"Fit rate of {fit_rate:.0%} vs {industry} average {avg_fit:.0%}. "
+                f"{'Above' if fit_rate >= avg_fit else 'Below'} industry standard."
+            ),
+        })
+    if "avg_ricefw_count" in bm:
+        avg_rf = bm["avg_ricefw_count"]["metric_value"]
+        comparisons.append({
+            "metric": "ricefw_count",
+            "your_value": len(ricefw),
+            "industry_avg": avg_rf,
+            "percentile": _percentile(len(ricefw), avg_rf, avg_rf * 0.65, avg_rf * 1.35, lower_is_better=True),
+            "direction": "lower_is_better",
+            "insight": (
+                f"{len(ricefw)} RICEFW items vs {industry} average {avg_rf:.0f}. "
+                f"{'Clean core alignment is strong.' if len(ricefw) <= avg_rf else 'High customisation volume — review for clean core risk.'}"
+            ),
+        })
+
+    sample_size = bm.get("avg_gap_rate", {}).get("sample_size", 0)
+    return {
+        "engagement_id": engagement_id,
+        "industry": industry,
+        "sample_size": sample_size,
+        "comparisons": comparisons,
+        "overall_health": "strong" if gap_rate < (bm.get("avg_gap_rate", {}).get("metric_value") or 1) else "at_risk",
+    }
+
+
+@router.post("/engagement/{engagement_id}/seed-benchmarks", status_code=200)
+def seed_benchmarks(engagement_id: str):
+    """Admin: seed benchmark data for all industries. Safe to re-run (upserts)."""
+    from database import upsert_benchmark
+    seeded = 0
+    for industry, rows in _BENCHMARK_SEED.items():
+        for row in rows:
+            upsert_benchmark(industry, row["process_area"], row["metric_name"],
+                             row["metric_value"], row["sample_size"])
+            seeded += 1
+    return {"seeded": seeded, "industries": list(_BENCHMARK_SEED.keys()), "status": "ok"}
 
 
 # ── Phase 3: Portal live badge, mode switch safety, tier lock ────────────────
