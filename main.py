@@ -4140,7 +4140,7 @@ def list_ricefw(engagement_id: str, type: Optional[str] = None):
     if type and type.upper() not in _RICEFW_TYPES:
         raise HTTPException(status_code=400, detail=f"type must be one of: {', '.join(sorted(_RICEFW_TYPES))}")
     try:
-        items = get_ricefw_by_engagement(engagement_id, type=type.upper() if type else None)
+        items = get_ricefw_by_engagement(engagement_id, item_type=type.upper() if type else None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"engagement_id": engagement_id, "total": len(items), "items": items}
