@@ -106,6 +106,10 @@ from database import (
     update_queue_item_status,
     update_engagement_mode,
     supabase,
+    get_sap_scope_items,
+    upsert_sap_scope_items,
+    get_process_hierarchy_from_db,
+    upsert_process_hierarchy,
 )
 from autonomy import should_auto_execute, get_effective_config
 from scope_items import SCOPE_ITEMS, get_catalogue_text
