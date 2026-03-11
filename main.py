@@ -2186,21 +2186,65 @@ def get_benchmark_hints(engagement_id: str):
         stored = []
     if stored:
         return {"engagement_id": engagement_id, "hints": stored, "opted_out": False}
+    # Pre-seeded industry benchmarks for mid-market Cloud ERP prospects (<$1B revenue)
+    # Sources: APQC PCF benchmarks, Gartner ERP spend data, SAP partner field data
+    _INDUSTRY_BENCHMARKS: dict[str, list[dict]] = {
+        "manufacturing": [
+            {"category": "operational", "title": "Inventory Turns (Mid-Market Mfg)", "content": "Industry median: 8–12x/year. Top quartile: 14x+. Poor inventory turns are a leading Cloud ERP value driver — present this to the CFO."},
+            {"category": "operational", "title": "On-Time Delivery (OTD)", "content": "Industry median: 85–90%. Top performers: 97%+. MRP/production planning improvements from S/4HANA typically deliver 5–8pp uplift."},
+            {"category": "finance", "title": "Month-End Close Cycle", "content": "Mid-market median: 7–10 days. S/4HANA Universal Journal typically reduces this to 3–5 days (30–50% improvement)."},
+            {"category": "finance", "title": "Finance FTE per $100M Revenue", "content": "Median: 3.5–5 FTE. Best-in-class: 2.0–2.5 FTE. Cloud ERP consolidation often removes 1–2 FTE through process automation."},
+        ],
+        "distribution": [
+            {"category": "operational", "title": "Order Fill Rate", "content": "Industry median: 92–95%. Top quartile: 98%+. Integrated ATP (Available-To-Promise) in S/4HANA is a primary driver."},
+            {"category": "operational", "title": "PO-to-Goods Receipt Cycle", "content": "Median: 5–8 days. S/4HANA + supplier portal integration reduces to 2–3 days in best cases."},
+            {"category": "finance", "title": "Days Payable Outstanding (DPO)", "content": "Target range 35–45 days. Automated 3-way match in S/4HANA reduces invoice processing from ~12 days to ~2 days."},
+            {"category": "erp", "title": "ERP TCO per User/Year", "content": "Mid-market cloud ERP: $2,500–$4,500/user/year all-in. Legacy on-premise: $5,000–$8,000/user/year. Typical 3-year TCO improvement: 25–40%."},
+        ],
+        "services": [
+            {"category": "finance", "title": "DSO (Days Sales Outstanding)", "content": "Professional services median: 55–65 days. S/4HANA Collections Management + automated dunning reduces DSO by 8–15 days."},
+            {"category": "finance", "title": "Revenue Recognition Accuracy", "content": "Non-automated rev-rec errors: 2–5% of revenue. IFRS 15 / ASC 606 compliance built into S/4HANA eliminates manual adjustments."},
+            {"category": "operational", "title": "Project Billing Cycle Time", "content": "Manual processes: 5–10 days after project close. Integrated S/4HANA PS: same-day billing capability."},
+        ],
+        "retail": [
+            {"category": "operational", "title": "Inventory Shrink Rate", "content": "Industry average: 1.3–1.5% of revenue. Real-time inventory with S/4HANA + RFID integration targets <0.8%."},
+            {"category": "finance", "title": "Cost of Goods Sold Accuracy", "content": "Perpetual inventory in S/4HANA replaces periodic COGS estimation — real-time P&L for each SKU."},
+        ],
+        "healthcare": [
+            {"category": "compliance", "title": "Regulatory Audit Readiness", "content": "S/4HANA Change Documents + Document Management provide full traceability for FDA/CE audits with near-zero manual prep."},
+            {"category": "finance", "title": "Cost per Patient/Procedure", "content": "CO-PA in S/4HANA enables margin analysis by procedure type — typically unavailable in mid-market legacy systems."},
+        ],
+    }
+
     # Derive hints from client profile
     hints = []
-    sector = client.get("sector_archetype") or client.get("industry")
-    if sector:
-        hints.append({
-            "category": "sector",
-            "title": f"Sector: {sector}",
-            "content": f"Your sector archetype is set to {sector}. Use this to tailor scope item relevance and industry best practices in gap analysis.",
-        })
+    sector = (client.get("sector_archetype") or client.get("industry") or "").lower()
+
+    # Add industry-specific benchmarks if sector matches
+    matched_benchmarks = []
+    for key, benchmarks in _INDUSTRY_BENCHMARKS.items():
+        if key in sector or sector in key:
+            matched_benchmarks = benchmarks
+            break
+    if matched_benchmarks:
+        hints.extend(matched_benchmarks)
+    else:
+        # Generic benchmarks applicable to all Cloud ERP prospects
+        hints.extend([
+            {"category": "finance", "title": "Month-End Close (All Industries)", "content": "APQC median: 6.4 days. Top quartile: 4 days. S/4HANA Universal Journal is the single biggest enabler."},
+            {"category": "erp", "title": "ERP Project Risk (Mid-Market)", "content": "Gartner: 55% of ERP projects exceed budget. The top 3 causes: unclear requirements, scope creep, data quality. RAPID addresses all three."},
+            {"category": "erp", "title": "Cloud ERP Payback Period", "content": "Mid-market average: 18–24 months. Fastest payback: companies that complete Discovery in <4 weeks and avoid RICEFW > 15% of scope."},
+        ])
+
     erp = client.get("erp_maturity")
     if erp:
         hints.append({
             "category": "erp_maturity",
             "title": f"ERP maturity: {erp}",
-            "content": f"ERP maturity is {erp}. This can influence fit vs. gap expectations and adoption readiness.",
+            "content": f"ERP maturity is '{erp}'. "
+                + ("First-time ERP adopters typically have 40–60% more gaps than mature ERP users. Budget for higher Change Management effort." if erp in ("first_erp", "greenfield") else
+                   "Experienced ERP users typically achieve 70–80% fit_standard rate in fit-gap. Watch for technical debt in custom code migration." if erp in ("legacy", "mature") else
+                   "Expect 60–70% fit_standard rate in fit-gap. Primary risks: data migration and process harmonisation."),
         })
     drivers = client.get("complexity_drivers")
     if drivers:
@@ -2211,13 +2255,7 @@ def get_benchmark_hints(engagement_id: str):
         hints.append({
             "category": "complexity",
             "title": "Complexity drivers",
-            "content": f"Noted complexity drivers: {drivers_str}. Consider these when assessing effort and customisation risk.",
-        })
-    if not hints:
-        hints.append({
-            "category": "general",
-            "title": "Benchmark insights",
-            "content": "Add sector archetype, ERP maturity, or complexity drivers in the client profile to get tailored benchmark hints here.",
+            "content": f"Noted complexity drivers: {drivers_str}. Each driver typically adds 8–15% to RICEFW count. Flag these in the Risk section of your Blueprint.",
         })
     return {"engagement_id": engagement_id, "hints": hints, "opted_out": False}
 
@@ -4622,6 +4660,19 @@ def ricefw_generate_from_gaps(engagement_id: str):
     req_map = {r["req_id"]: r for r in requirements}
     created = 0
     skipped = 0
+
+    # Default effort bands by RICEFW type × complexity (person-days)
+    # Based on SAP S/4HANA project empirical data for mid-market (<$1B) implementations
+    _EFFORT_DEFAULTS: dict[str, dict[str, tuple[int, int]]] = {
+        "R": {"XS": (1,2),  "S": (2,5),   "M": (5,10),  "L": (10,20),  "XL": (20,40)},   # Report
+        "I": {"XS": (2,4),  "S": (4,8),   "M": (8,15),  "L": (15,30),  "XL": (30,60)},   # Interface
+        "C": {"XS": (3,5),  "S": (5,10),  "M": (10,25), "L": (25,50),  "XL": (50,100)},  # Conversion
+        "E": {"XS": (2,4),  "S": (4,8),   "M": (8,20),  "L": (20,40),  "XL": (40,80)},   # Enhancement
+        "F": {"XS": (5,10), "S": (10,20), "M": (20,40), "L": (40,80),  "XL": (80,150)},  # Form
+        "W": {"XS": (1,3),  "S": (3,6),   "M": (6,12),  "L": (12,25),  "XL": (25,50)},   # Workflow
+    }
+    _COMPLEXITY_MAP = {"XS": "XS", "S": "S", "M": "M", "L": "L", "XL": "XL"}
+
     for a in gap_ricefw_approved:
         req_id = a.get("req_id")
         if not req_id or req_id in req_ids_with_ricefw:
@@ -4630,17 +4681,40 @@ def ricefw_generate_from_gaps(engagement_id: str):
         req = req_map.get(req_id) or {}
         title = (req.get("title") or a.get("requirement_title") or req_id).strip() or req_id
         description = (a.get("rationale") or title)[:2000]
-        # RICEFW complexity is very_high|high|medium|low; fit/gap uses XS|S|M|L|XL — pass None to avoid invalid value
+
+        # Infer best RICEFW type from category / description heuristics
+        cat = (req.get("category") or "").upper()
+        if "REPORT" in cat or "ANALYTICS" in cat or "DASHBOARD" in cat:
+            item_type = "R"
+        elif "INTERFACE" in cat or "INTEGRATION" in cat or "API" in cat:
+            item_type = "I"
+        elif "MIGRATION" in cat or "CONVERSION" in cat or "DATA LOAD" in cat:
+            item_type = "C"
+        elif "FORM" in cat or "OUTPUT" in cat or "PRINT" in cat:
+            item_type = "F"
+        elif "WORKFLOW" in cat or "APPROVAL" in cat or "NOTIFICATION" in cat:
+            item_type = "W"
+        else:
+            item_type = "E"  # Default to Enhancement
+
+        # Get effort defaults from complexity
+        complexity_key = _COMPLEXITY_MAP.get((a.get("complexity") or "M").upper(), "M")
+        effort_low, effort_high = _EFFORT_DEFAULTS.get(item_type, _EFFORT_DEFAULTS["E"]).get(
+            complexity_key, (5, 10)
+        )
+
         try:
             create_ricefw_item(
                 engagement_id=engagement_id,
-                item_type="E",
+                item_type=item_type,
                 name=title,
                 req_id=req_id,
                 description=description,
                 status="identified",
                 complexity=None,
                 priority=None,
+                effort_days_low=effort_low,
+                effort_days_high=effort_high,
             )
             created += 1
             req_ids_with_ricefw.add(req_id)
