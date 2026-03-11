@@ -5442,14 +5442,33 @@ Generate 3–5 steps covering the happy path."""
                 model=MODEL_HAIKU,
                 messages=[{"role": "user", "content": prompt}],
                 system="You are an SAP test case writer. Return valid JSON only.",
-                max_tokens=1200,
+                max_tokens=2000,
             )
             raw = result["content"].strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
-            data = json.loads(raw)
+            raw = raw.strip()
+            # Attempt to repair truncated JSON
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Truncation repair: close any open strings/arrays/objects
+                repair = raw
+                # Close open string if last char isn't " or }
+                if not repair.endswith("}"):
+                    # Trim to last complete key-value pair
+                    for end_marker in ['"}', '"]', '}']:
+                        idx = repair.rfind(end_marker)
+                        if idx > 0:
+                            repair = repair[:idx + len(end_marker)]
+                            break
+                    # Ensure closing brace
+                    open_braces = repair.count("{") - repair.count("}")
+                    open_brackets = repair.count("[") - repair.count("]")
+                    repair += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+                data = json.loads(repair)
             test_case_id = f"TC-{next_tc_num:03d}"
             next_tc_num += 1
             script = create_test_script({
