@@ -921,7 +921,7 @@ def patch_client(client_id: str, body: ClientUpdate):
 
 
 @router.post("/clients/{client_id}/benchmark-opt-out", status_code=200)
-def client_benchmark_opt_out(client_id: str, api_key: str = Depends(verify_api_key)):
+def client_benchmark_opt_out(client_id: str, api_key: str = Depends(require_api_key)):
     """Set benchmark_opt_in = false for the client. Used when client opts out of benchmark insights."""
     client = get_client(client_id)
     if not client:
