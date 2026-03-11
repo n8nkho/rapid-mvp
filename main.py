@@ -5442,7 +5442,7 @@ Generate 3–5 steps covering the happy path."""
                 model=MODEL_HAIKU,
                 messages=[{"role": "user", "content": prompt}],
                 system="You are an SAP test case writer. Return valid JSON only.",
-                max_tokens=500,
+                max_tokens=1200,
             )
             raw = result["content"].strip()
             if raw.startswith("```"):
