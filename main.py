@@ -8553,6 +8553,10 @@ ALTER TABLE engagements ADD COLUMN IF NOT EXISTS health text;
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'collaborative'
   CHECK (mode IN ('guided', 'collaborative', 'autonomous'));
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS autonomy_config jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS business_case jsonb DEFAULT '{}';
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS portal_token text;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS portal_enabled boolean DEFAULT false;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS go_live_date text;
 """
 
 _REQUIREMENTS_EXTRA_DDL = """
