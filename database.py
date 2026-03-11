@@ -51,21 +51,33 @@ def get_results_by_engagement(engagement_id: str, limit: int = 200) -> list:
 # ── Requirements & HITL ─────────────────────────────────────────────────────
 
 def _next_req_id(engagement_id: str) -> str:
-    """Generate next sequential REQ-XXX id, unique within an engagement."""
-    response = (
-        supabase.table("requirements")
-        .select("req_id")
-        .eq("engagement_id", engagement_id)
-        .execute()
-    )
-    existing = response.data or []
-    nums = []
-    for row in existing:
-        try:
-            nums.append(int(row["req_id"].split("-")[1]))
-        except (IndexError, ValueError):
-            pass
-    return f"REQ-{max(nums, default=0) + 1:03d}"
+    """Generate next sequential REQ-XXX id, unique within an engagement.
+    Uses a retry loop to handle race conditions under concurrent inserts."""
+    import random, time
+    for attempt in range(5):
+        response = (
+            supabase.table("requirements")
+            .select("req_id")
+            .eq("engagement_id", engagement_id)
+            .execute()
+        )
+        existing = response.data or []
+        nums = []
+        for row in existing:
+            try:
+                nums.append(int(row["req_id"].split("-")[1]))
+            except (IndexError, ValueError):
+                pass
+        candidate = f"REQ-{max(nums, default=0) + 1:03d}"
+        # Check if candidate already exists (another request may have just inserted it)
+        conflict = supabase.table("requirements").select("req_id").eq(
+            "engagement_id", engagement_id).eq("req_id", candidate).execute()
+        if not (conflict.data or []):
+            return candidate
+        # Back off briefly and retry
+        time.sleep(0.05 + random.random() * 0.1)
+    # Fallback: use a timestamp suffix to guarantee uniqueness
+    return f"REQ-{int(time.time() * 1000) % 100000:05d}"
 
 
 def create_requirement(
