@@ -1434,3 +1434,42 @@ def create_pattern(name: str, category: str, content: str, industry_tag: str = N
         record["industry_tag"] = industry_tag
     response = supabase.table("pattern_library").insert(record).execute()
     return response.data[0] if response.data else {}
+
+
+# ── SAP Reference Data (scope items + process hierarchy) ─────────────────────
+
+def get_sap_scope_items(lob: str = None, limit: int = 500) -> list:
+    """Fetch SAP scope items from DB. Falls back to in-memory if table empty."""
+    try:
+        q = supabase.table("sap_scope_items").select("*").limit(limit)
+        if lob:
+            q = q.eq("lob", lob)
+        result = q.execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def upsert_sap_scope_items(items: list) -> int:
+    """Upsert scope items into DB. Returns count inserted/updated."""
+    if not items:
+        return 0
+    result = supabase.table("sap_scope_items").upsert(items, on_conflict="id").execute()
+    return len(result.data or [])
+
+
+def get_process_hierarchy_from_db() -> list:
+    """Fetch flat process hierarchy from DB."""
+    try:
+        result = supabase.table("process_hierarchy").select("*").order("lob").order("level2").order("level3").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def upsert_process_hierarchy(rows: list) -> int:
+    """Upsert process hierarchy rows. Returns count."""
+    if not rows:
+        return 0
+    result = supabase.table("process_hierarchy").upsert(rows, on_conflict="lob,level2,level3").execute()
+    return len(result.data or [])

@@ -681,15 +681,21 @@ def health_ready():
 
 @router.get("/catalogue")
 def get_catalogue(lob: Optional[str] = None):
+    """Return SAP scope items. Reads from DB first; falls back to in-memory."""
+    db_items = get_sap_scope_items(lob=lob)
+    if db_items:
+        return {"total": len(db_items), "items": db_items, "source": "db"}
     items = SCOPE_ITEMS
     if lob:
         items = [i for i in items if i.get('lob', '').lower() == lob.lower()]
-    return {"total": len(items), "items": items}
+    return {"total": len(items), "items": items, "source": "memory"}
 
 @router.get("/lobs")
 def get_lobs():
     from collections import Counter
-    counts = Counter(i['lob'] for i in SCOPE_ITEMS)
+    db_items = get_sap_scope_items()
+    source = db_items if db_items else SCOPE_ITEMS
+    counts = Counter(i['lob'] for i in source)
     return {"lobs": [{"name": k, "count": v} for k, v in sorted(counts.items())]}
 
 @router.get("/results")
@@ -3140,21 +3146,32 @@ _PROCESS_HIERARCHY: Dict[str, Dict[str, Dict[str, List[str]]]] = {
 
 @router.get("/process-hierarchy")
 def get_process_hierarchy():
+    """Return process hierarchy. Reads from DB; falls back to in-memory if DB empty."""
+    rows = get_process_hierarchy_from_db()
+    if rows:
+        # Rebuild nested dict from flat DB rows
+        result: dict = {}
+        for r in rows:
+            lob = r["lob"]; l2 = r["level2"]; l3 = r["level3"]
+            l4 = r.get("level4_items") or []
+            result.setdefault(lob, {}).setdefault(l2, {})[l3] = l4
+        return result
     return _PROCESS_HIERARCHY
 
 
 @router.get("/process-hierarchy/flat")
 def get_process_hierarchy_flat():
+    """Return flat process hierarchy. Reads from DB; falls back to in-memory if DB empty."""
+    rows = get_process_hierarchy_from_db()
+    if rows:
+        return [{"lob": r["lob"], "level2": r["level2"], "level3": r["level3"],
+                 "level4": r.get("level4_items") or []} for r in rows]
+    # In-memory fallback
     flat = []
     for lob, level2_map in _PROCESS_HIERARCHY.items():
         for level2, level3_map in level2_map.items():
             for level3, level4 in level3_map.items():
-                flat.append({
-                    "lob": lob,
-                    "level2": level2,
-                    "level3": level3,
-                    "level4": level4,
-                })
+                flat.append({"lob": lob, "level2": level2, "level3": level3, "level4": level4})
     return flat
 
 
@@ -9071,6 +9088,65 @@ class RetainEngagementRequest(BaseModel):
 def admin_retain_engagement(body: RetainEngagementRequest):
     """Remove all clients and engagements except the given one (e.g. ENG-016). Destructive."""
     return retain_only_engagement(body.engagement_id)
+
+
+@admin_router.post("/admin/seed-reference-data", status_code=200, dependencies=[Depends(_require_admin_key)])
+def seed_reference_data(body: dict = Body(default={})):
+    """Seed SAP scope items and process hierarchy into Supabase.
+    Run once after deployment, or after each SAP release (~Feb and Aug).
+    Safe to re-run: uses upsert on primary keys.
+    Body: {"release": "2602"} — optional label for the release version.
+    """
+    release = body.get("release", "2602")
+    errors = []
+
+    # ── Scope items ────────────────────────────────────────────────────────────
+    scope_rows = []
+    for item in SCOPE_ITEMS:
+        scope_rows.append({
+            "id": item["id"],
+            "name": item["name"],
+            "lob": item.get("lob", ""),
+            "process_group": item.get("process_group", ""),
+            "description": item.get("description", ""),
+            "migration_objects": item.get("migration_objects", []),
+            "keywords": item.get("keywords", []),
+            "release_version": release,
+        })
+    scope_count = 0
+    # Upsert in batches of 50 to avoid request size limits
+    for i in range(0, len(scope_rows), 50):
+        try:
+            scope_count += upsert_sap_scope_items(scope_rows[i:i+50])
+        except Exception as e:
+            errors.append(f"scope_items batch {i//50}: {e}")
+
+    # ── Process hierarchy ──────────────────────────────────────────────────────
+    hierarchy_rows = []
+    for lob, level2_map in _PROCESS_HIERARCHY.items():
+        for level2, level3_map in level2_map.items():
+            for level3, level4_items in level3_map.items():
+                hierarchy_rows.append({
+                    "lob": lob,
+                    "level2": level2,
+                    "level3": level3,
+                    "level4_items": level4_items,
+                    "release_version": release,
+                })
+    hierarchy_count = 0
+    for i in range(0, len(hierarchy_rows), 50):
+        try:
+            hierarchy_count += upsert_process_hierarchy(hierarchy_rows[i:i+50])
+        except Exception as e:
+            errors.append(f"process_hierarchy batch {i//50}: {e}")
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "scope_items_upserted": scope_count,
+        "hierarchy_rows_upserted": hierarchy_count,
+        "release": release,
+        "errors": errors,
+    }
 
 
 @admin_router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])
