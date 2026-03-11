@@ -4627,11 +4627,18 @@ def get_deliverable_progress(engagement_id: str):
     completed_checklist = len([i for i in checklist if i.get("status") in ("complete", "completed")])
     go_live_pct = round(completed_checklist / total_checklist * 100) if total_checklist > 0 else 0
 
-    # Test scripts progress
+    # Test scripts progress — count all generated scripts against total RICEFW items
     test_scripts = _get_test_scripts(engagement_id)
-    total_scripts = len(test_scripts)
-    ready_scripts = len([s for s in test_scripts if s.get("status") == "ready"])
+    total_scripts = max(len(test_scripts), total_ricefw)  # denominator = RICEFW items
+    ready_scripts = len([s for s in test_scripts if s.get("status") in ("ready", "approved", "draft")])
     test_scripts_pct = round(ready_scripts / total_scripts * 100) if total_scripts > 0 else 0
+
+    overall_pct = round(
+        blueprint_pct * 0.40 +
+        ricefw_pct * 0.30 +
+        test_scripts_pct * 0.20 +
+        go_live_pct * 0.10
+    )
 
     return {
         "engagement_id": engagement_id,
@@ -4639,6 +4646,7 @@ def get_deliverable_progress(engagement_id: str):
         "ricefw_pct": ricefw_pct,
         "test_scripts_pct": test_scripts_pct,
         "go_live_pct": go_live_pct,
+        "overall_pct": overall_pct,
         "detail": {
             "total_requirements": total_reqs,
             "requirements_assessed": len(assessed_req_ids),
