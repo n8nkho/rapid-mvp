@@ -6,6 +6,7 @@ MODEL_HAIKU = "claude-haiku-4-5-20251001"
 MODEL_SONNET = "claude-sonnet-4-6"
 MODEL_SONNET_SEED = "claude-sonnet-4-20250514"
 
+
 class AnthropicProvider:
     def __init__(self):
         import anthropic
@@ -14,12 +15,38 @@ class AnthropicProvider:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-    def complete(self, system_prompt, user_prompt, max_tokens=1024, model=MODEL_HAIKU):
+    def complete(
+        self,
+        system_prompt=None,
+        user_prompt=None,
+        max_tokens=1024,
+        model=MODEL_HAIKU,
+        *,
+        # New-style keyword-only aliases used by Sprint 5+ callers
+        prompt=None,
+        system=None,
+        messages=None,
+    ):
+        """Unified completion method.
+
+        Supports two calling conventions:
+          Old-style: complete(system_prompt, user_prompt, max_tokens, model)
+          New-style: complete(model=..., system="...", prompt="..." or messages=[...])
+        """
+        # Resolve system text
+        sys_text = system or system_prompt or ""
+        # Resolve user message(s)
+        if messages is not None:
+            msgs = messages
+        else:
+            user_text = prompt or user_prompt or ""
+            msgs = [{"role": "user", "content": user_text}]
+
         msg = self.client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
+            system=sys_text,
+            messages=msgs,
         )
         self.call_count += 1
         self.total_input_tokens += msg.usage.input_tokens
@@ -27,11 +54,13 @@ class AnthropicProvider:
         tokens_used = msg.usage.input_tokens + msg.usage.output_tokens
         return {
             "content": msg.content[0].text,
-            "tokens_used": tokens_used
+            "tokens_used": tokens_used,
         }
+
 
 def get_provider():
     return AnthropicProvider()
+
 
 def get_llm_provider():
     return AnthropicProvider()

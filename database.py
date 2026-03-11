@@ -322,9 +322,17 @@ def list_engagements(client_id: str = None) -> list:
     return query.execute().data or []
 
 
-def update_engagement(engagement_id: str, updates: dict) -> dict:
-    """Update engagement by engagement_id. Returns updated row or {}."""
-    updates = {k: v for k, v in updates.items() if v is not None}
+def update_engagement(engagement_id: str, updates: dict, allow_null_keys: list | None = None) -> dict:
+    """Update engagement by engagement_id. Returns updated row or {}.
+
+    By default, None values are stripped (so you can't accidentally blank a field).
+    Pass allow_null_keys=['field'] to explicitly null specific fields.
+    """
+    allow_null_keys = allow_null_keys or []
+    updates = {
+        k: v for k, v in updates.items()
+        if v is not None or k in allow_null_keys
+    }
     if not updates:
         return get_engagement(engagement_id) or {}
     response = (

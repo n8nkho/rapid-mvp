@@ -2140,6 +2140,36 @@ def patch_scope(engagement_id: str, body: ScopeUpdate):
     return get_scope(engagement_id)
 
 
+class BusinessCaseSaveRequest(BaseModel):
+    kpis: Optional[list] = None
+    tco_items: Optional[list] = None
+    benefit_impact_per_pct: Optional[float] = None
+    notes: Optional[str] = None
+
+
+@router.get("/engagement/{engagement_id}/business-case")
+def get_business_case(engagement_id: str):
+    """Return the persisted business case data for an engagement."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    business_case = eng.get("business_case") or {}
+    return {"engagement_id": engagement_id, "business_case": business_case}
+
+
+@router.patch("/engagement/{engagement_id}/business-case")
+def save_business_case(engagement_id: str, body: BusinessCaseSaveRequest):
+    """Save (merge) business case data onto the engagement record."""
+    eng = get_engagement(engagement_id)
+    if not eng:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    existing = eng.get("business_case") or {}
+    patch = body.model_dump(exclude_none=True)
+    merged = {**existing, **patch}
+    update_engagement(engagement_id, {"business_case": merged})
+    return {"engagement_id": engagement_id, "business_case": merged}
+
+
 @router.get("/engagement/{engagement_id}/benchmark-hints")
 def get_benchmark_hints(engagement_id: str):
     """Return benchmark insights for the engagement. If client has benchmark_opt_in=false, returns []. Otherwise returns stored hints or derived from client profile (sector_archetype, erp_maturity, complexity_drivers)."""
@@ -2318,29 +2348,49 @@ def engagement_audit_trail(engagement_id: str, limit: int = 100):
 
 @router.get("/engagement/{engagement_id}/completion-check", tags=["govern"])
 def get_completion_check(engagement_id: str):
-    """Engagement completion checklist: all reqs have fit-gap, all assessments HITL approved or out_of_scope."""
+    """Engagement completion checklist.
+
+    Checks two independent criteria:
+    1. All requirements have a fit-gap assessment.
+    2. All requirements are HITL-approved (via requirements.hitl_state) OR
+       their fit-gap assessment is approved/out_of_scope — whichever count is higher
+       (requirements HITL queue is the primary signal).
+    """
     try:
         eng = get_engagement(engagement_id)
         if not eng:
             raise HTTPException(status_code=404, detail="Engagement not found")
         requirements = get_requirements_by_engagement(engagement_id)
         assessments = get_fit_gap_by_engagement(engagement_id)
+
         req_ids_with_fga = {a["req_id"] for a in assessments}
         all_have_fga = all(r["req_id"] in req_ids_with_fga for r in requirements) if requirements else True
-        approved_or_scope = sum(
-            1 for a in assessments
+
+        # Primary signal: requirements.hitl_state (driven by /hitl queue)
+        hitl_approved_req_ids = {
+            r["req_id"] for r in requirements
+            if (r.get("hitl_state") or "").lower() in ("approved", "out_of_scope")
+        }
+        # Secondary signal: fit_gap_assessments.hitl_state (legacy)
+        fga_approved_ids = {
+            a["req_id"] for a in assessments
             if (a.get("hitl_state") or "").lower() in ("approved", "out_of_scope")
-        )
+        }
+        # A requirement is "reviewed" if EITHER signal shows approval
+        reviewed_req_ids = hitl_approved_req_ids | fga_approved_ids
+        total_reqs = len(requirements)
+        approved_count = len(reviewed_req_ids)
         total_fga = len(assessments)
-        all_fga_reviewed = (total_fga == approved_or_scope) if total_fga else True
+        all_reviewed = (approved_count >= total_reqs) if total_reqs else True
+
         return {
             "engagement_id": engagement_id,
-            "total_requirements": len(requirements),
+            "total_requirements": total_reqs,
             "total_assessments": total_fga,
             "all_requirements_have_fit_gap": all_have_fga,
-            "all_assessments_reviewed": all_fga_reviewed,
-            "approved_or_out_of_scope_count": approved_or_scope,
-            "complete": all_have_fga and all_fga_reviewed,
+            "all_assessments_reviewed": all_reviewed,
+            "approved_or_out_of_scope_count": approved_count,
+            "complete": all_have_fga and all_reviewed,
         }
     except HTTPException:
         raise
@@ -4485,6 +4535,14 @@ def fit_gap_analyse_all(engagement_id: str):
     return {"engagement_id": engagement_id, "processed": created}
 
 
+def _get_test_scripts(engagement_id: str) -> list:
+    """Internal helper: return test scripts list, gracefully returning [] on error."""
+    try:
+        return list_test_scripts_by_engagement(engagement_id)
+    except Exception:
+        return []
+
+
 @router.get("/engagement/{engagement_id}/deliverable-progress")
 def get_deliverable_progress(engagement_id: str):
     """Return deliverable progress percentages for blueprint, RICEFW, test scripts, and go-live."""
@@ -4507,14 +4565,20 @@ def get_deliverable_progress(engagement_id: str):
 
     checklist = get_go_live_checklist(engagement_id)
     total_checklist = len(checklist)
-    completed_checklist = len([i for i in checklist if i.get("status") == "completed"])
+    completed_checklist = len([i for i in checklist if i.get("status") in ("complete", "completed")])
     go_live_pct = round(completed_checklist / total_checklist * 100) if total_checklist > 0 else 0
+
+    # Test scripts progress
+    test_scripts = _get_test_scripts(engagement_id)
+    total_scripts = len(test_scripts)
+    ready_scripts = len([s for s in test_scripts if s.get("status") == "ready"])
+    test_scripts_pct = round(ready_scripts / total_scripts * 100) if total_scripts > 0 else 0
 
     return {
         "engagement_id": engagement_id,
         "blueprint_pct": blueprint_pct,
         "ricefw_pct": ricefw_pct,
-        "test_scripts_pct": 0,
+        "test_scripts_pct": test_scripts_pct,
         "go_live_pct": go_live_pct,
         "detail": {
             "total_requirements": total_reqs,
@@ -4524,6 +4588,8 @@ def get_deliverable_progress(engagement_id: str):
             "ricefw_with_effort": len(ricefw_with_effort),
             "checklist_total": total_checklist,
             "checklist_completed": completed_checklist,
+            "test_scripts_total": total_scripts,
+            "test_scripts_ready": ready_scripts,
         },
     }
 
@@ -4876,12 +4942,18 @@ def seed_requirements(request: Request, body: SeedRequirementsRequest):
     assessments_created = 0
     gap_types = {"gap_ricefw", "gap_companion", "out_of_scope"}
 
+    # Normalise selected processes for loose matching
+    selected_processes_lower = {p.lower().strip() for p in body.processes}
+
     for item in items:
         if not isinstance(item, dict):
             continue
         title = (item.get("title") or "").strip() or "Untitled"
         description = (item.get("description") or "").strip()
         process = (item.get("process") or "").strip() or body.processes[0]
+        # Only insert requirements whose process is in the selected list
+        if process.lower().strip() not in selected_processes_lower:
+            continue
         priority = item.get("priority") or "Must-Have"
         if priority == "Could-Have":
             priority = "Nice-to-Have"
@@ -5414,35 +5486,51 @@ def blueprint_preview(engagement_id: str):
     open_items = [r for r in reqs if r.get("sign_off_status") != "confirmed"]
     high_risk = [a for a in assessments if a.get("customisation_risk") == "High" or a.get("complexity") in ["L", "XL"]]
 
+    # Build fit_counts as array matching frontend BlueprintPreview type
+    total_assessed = len(assessments)
+    fit_counts_arr = [
+        {
+            "type": ft,
+            "count": cnt,
+            "pct": round(cnt / total_assessed * 100) if total_assessed else 0,
+        }
+        for ft, cnt in sorted(fit_counts.items(), key=lambda x: -x[1])
+    ]
+
+    # Build process_areas array matching frontend BlueprintPreview type
+    process_areas_arr = [
+        {"name": proc, "req_count": len(reqs_list)}
+        for proc, reqs_list in by_process.items()
+    ]
+
+    # Generate a short executive summary
+    eng_name = (eng or {}).get("name") or "this engagement"
+    client_name = client.get("name") or "the client"
+    gap_count = fit_counts.get("gap_ricefw", 0) + fit_counts.get("gap_companion", 0)
+    fit_std_count = fit_counts.get("fit_standard", 0) + fit_counts.get("fit_config", 0)
+    executive_summary = (
+        f"This blueprint covers {len(reqs)} requirements across {len(by_process)} process area(s) "
+        f"for {client_name}. {fit_std_count} requirement(s) are met by standard SAP configuration. "
+        f"{gap_count} gap(s) require custom development (RICEFW). "
+        f"Total estimated development effort: {total_effort_low}–{total_effort_high} person-days."
+    )
+
     return {
-        "engagement": eng,
-        "client": client,
-        "fit_counts": fit_counts,
+        # Flat fields consumed by frontend BlueprintPreview type
+        "executive_summary": executive_summary,
+        "fit_counts": fit_counts_arr,
+        "process_areas": process_areas_arr,
+        "ricefw_total": len(ricefw_items),
+        "ricefw_effort_low": total_effort_low,
+        "ricefw_effort_high": total_effort_high,
+        # Extra context for advanced use
         "total_requirements": len(reqs),
-        "total_ricefw": len(ricefw_items),
-        "total_effort_low": total_effort_low,
-        "total_effort_high": total_effort_high,
-        "process_areas": list(by_process.keys()),
-        "by_process": {
-            proc: [
-                {
-                    "req": req,
-                    "assessment": assess_by_req.get(req["req_id"]),
-                    "steps": steps_by_req.get(req["req_id"], []),
-                }
-                for req in reqs_list
-            ]
-            for proc, reqs_list in by_process.items()
-        },
-        "ricefw_items": ricefw_items,
-        "open_items": open_items,
-        "high_risk_items": high_risk,
-        "raci": raci,
-        "sources": sources,
         "sign_off_pct": (
             round(len([r for r in reqs if r.get("sign_off_status") == "confirmed"]) / len(reqs) * 100)
             if reqs else 0
         ),
+        "open_items_count": len(open_items),
+        "high_risk_count": len(high_risk),
     }
 
 
@@ -6027,7 +6115,7 @@ def portal_approve_signoff(token: str, req_id: str):
     req = get_requirement_by_id(req_id, engagement_id)
     if not req:
         raise HTTPException(status_code=404, detail=f"Requirement {req_id} not found")
-    updated = update_requirement(req_id, {
+    updated = update_requirement(req_id, engagement_id, {
         "sign_off_status": "confirmed",
         "sign_off_by": portal_user.get("name"),
         "sign_off_at": datetime.now(timezone.utc).isoformat(),
@@ -6264,6 +6352,12 @@ Write in 4 sections: Summary (2 sentences), Progress This Period (bullet points)
             "high_risk_items": len(high_risk),
         },
         "narrative": narrative,
+        # Flat fields consumed by frontend SteerCoReport type
+        "summary": "\n".join(sections.get("summary", [])),
+        "progress_this_period": sections.get("progress", []),
+        "decisions_required": sections.get("decisions_required", []),
+        "next_steps": sections.get("next_steps", []),
+        # Also include nested sections for API consumers that prefer it
         "sections": {
             "summary": "\n".join(sections.get("summary", [])),
             "progress": sections.get("progress", []),
@@ -8073,19 +8167,29 @@ def engagement_notify_webhook(
     Stores all events in notification_log. Routes known event_types to the
     action queue for the relevant engagement.
     """
-    # Optional HMAC verification
+    # HMAC-SHA256 signature verification
+    # Senders must sign the canonical JSON body (sorted keys, no spaces):
+    #   signature = hmac.new(WEBHOOK_SECRET.encode(), json.dumps(payload, sort_keys=True, separators=(',',':')).encode(), sha256).hexdigest()
+    #   Header: X-RAPID-Signature: sha256=<hex>
     signature_valid: Optional[bool] = None
     webhook_secret = (os.getenv("WEBHOOK_SECRET") or "").strip()
-    if webhook_secret and x_rapid_signature:
+    if webhook_secret:
+        if not x_rapid_signature:
+            raise HTTPException(status_code=401, detail="X-RAPID-Signature required when WEBHOOK_SECRET is configured")
         import hmac as _hmac
         import hashlib as _hashlib
-        expected = _hmac.new(webhook_secret.encode(), request.headers.get("content-length", "").encode(), _hashlib.sha256).hexdigest()
-        # For real verification we'd need the raw body; flag as checked but valid=None since we can't
-        # re-read body after Pydantic parsing. Signal presence only.
-        signature_valid = True   # presence acknowledged; full raw-body check requires middleware
-    elif webhook_secret and not x_rapid_signature:
-        signature_valid = False
-        raise HTTPException(status_code=401, detail="X-RAPID-Signature required when WEBHOOK_SECRET is configured")
+        # Reconstruct canonical body from the parsed Pydantic model
+        canonical = json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":"), default=str)
+        expected = "sha256=" + _hmac.new(
+            webhook_secret.encode(),
+            canonical.encode(),
+            _hashlib.sha256,
+        ).hexdigest()
+        # Constant-time comparison to prevent timing attacks
+        provided = x_rapid_signature if x_rapid_signature.startswith("sha256=") else f"sha256={x_rapid_signature}"
+        if not _hmac.compare_digest(expected, provided):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        signature_valid = True
 
     # Persist to notification_log
     notification_id: str = ""
