@@ -1514,3 +1514,29 @@ def update_translation_key(lang_code: str, key: str, value: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def get_locales_from_db() -> list:
+    """Fetch all locales from DB ordered by sort_order. Returns [] if table missing/empty."""
+    try:
+        result = supabase.table("locales").select("*").order("sort_order").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def upsert_locales(rows: list) -> int:
+    """Upsert locale rows. Returns count inserted/updated."""
+    if not rows:
+        return 0
+    result = supabase.table("locales").upsert(rows, on_conflict="code").execute()
+    return len(result.data or [])
+
+
+def update_locale(code: str, patch: dict) -> bool:
+    """Patch a single locale row by code. Returns True on success."""
+    try:
+        supabase.table("locales").update(patch).eq("code", code).execute()
+        return True
+    except Exception:
+        return False

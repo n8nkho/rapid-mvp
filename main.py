@@ -113,6 +113,9 @@ from database import (
     get_translations_from_db,
     upsert_translations,
     update_translation_key,
+    get_locales_from_db,
+    upsert_locales,
+    update_locale,
 )
 from autonomy import should_auto_execute, get_effective_config
 from scope_items import SCOPE_ITEMS, get_catalogue_text
@@ -9492,20 +9495,143 @@ _TRANSLATIONS_DATA: Dict[str, Dict[str, str]] = {
     },
 }
 
-SUPPORTED_LANGUAGES = [
-    {"code": "en", "name": "English", "flag": "🇬🇧"},
-    {"code": "de", "name": "Deutsch", "flag": "🇩🇪"},
-    {"code": "fr", "name": "Français", "flag": "🇫🇷"},
-    {"code": "es", "name": "Español", "flag": "🇪🇸"},
-    {"code": "pt", "name": "Português", "flag": "🇧🇷"},
-    {"code": "ja", "name": "日本語", "flag": "🇯🇵"},
-    {"code": "zh-CN", "name": "中文", "flag": "🇨🇳"},
-    {"code": "ar", "name": "العربية", "flag": "🇸🇦", "rtl": True},
-    {"code": "hi", "name": "हिन्दी", "flag": "🇮🇳"},
-    {"code": "nl", "name": "Nederlands", "flag": "🇳🇱"},
-    {"code": "it", "name": "Italiano", "flag": "🇮🇹"},
-    {"code": "pl", "name": "Polski", "flag": "🇵🇱"},
+_LOCALES_DATA: List[Dict] = [
+    {
+        "code": "en", "name": "English", "native_name": "English", "flag": "🇬🇧",
+        "rtl": False, "date_format": "MM/DD/YYYY", "time_format": "HH:mm",
+        "number_decimal": ".", "number_thousands": ",",
+        "currency_code": "USD", "currency_symbol": "$", "enabled": True, "sort_order": 0,
+    },
+    {
+        "code": "de", "name": "Deutsch", "native_name": "Deutsch", "flag": "🇩🇪",
+        "rtl": False, "date_format": "DD.MM.YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": ".",
+        "currency_code": "EUR", "currency_symbol": "€", "enabled": True, "sort_order": 1,
+    },
+    {
+        "code": "fr", "name": "Français", "native_name": "Français", "flag": "🇫🇷",
+        "rtl": False, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": " ",
+        "currency_code": "EUR", "currency_symbol": "€", "enabled": True, "sort_order": 2,
+    },
+    {
+        "code": "es", "name": "Español", "native_name": "Español", "flag": "🇪🇸",
+        "rtl": False, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": ".",
+        "currency_code": "EUR", "currency_symbol": "€", "enabled": True, "sort_order": 3,
+    },
+    {
+        "code": "pt", "name": "Português", "native_name": "Português", "flag": "🇧🇷",
+        "rtl": False, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": ".",
+        "currency_code": "BRL", "currency_symbol": "R$", "enabled": True, "sort_order": 4,
+    },
+    {
+        "code": "ja", "name": "日本語", "native_name": "日本語", "flag": "🇯🇵",
+        "rtl": False, "date_format": "YYYY/MM/DD", "time_format": "HH:mm",
+        "number_decimal": ".", "number_thousands": ",",
+        "currency_code": "JPY", "currency_symbol": "¥", "enabled": True, "sort_order": 5,
+    },
+    {
+        "code": "zh-CN", "name": "中文", "native_name": "中文（简体）", "flag": "🇨🇳",
+        "rtl": False, "date_format": "YYYY/MM/DD", "time_format": "HH:mm",
+        "number_decimal": ".", "number_thousands": ",",
+        "currency_code": "CNY", "currency_symbol": "¥", "enabled": True, "sort_order": 6,
+    },
+    {
+        "code": "ar", "name": "العربية", "native_name": "العربية", "flag": "🇸🇦",
+        "rtl": True, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ".", "number_thousands": ",",
+        "currency_code": "SAR", "currency_symbol": "﷼", "enabled": True, "sort_order": 7,
+    },
+    {
+        "code": "hi", "name": "हिन्दी", "native_name": "हिन्दी", "flag": "🇮🇳",
+        "rtl": False, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ".", "number_thousands": ",",
+        "currency_code": "INR", "currency_symbol": "₹", "enabled": True, "sort_order": 8,
+    },
+    {
+        "code": "nl", "name": "Nederlands", "native_name": "Nederlands", "flag": "🇳🇱",
+        "rtl": False, "date_format": "DD-MM-YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": ".",
+        "currency_code": "EUR", "currency_symbol": "€", "enabled": True, "sort_order": 9,
+    },
+    {
+        "code": "it", "name": "Italiano", "native_name": "Italiano", "flag": "🇮🇹",
+        "rtl": False, "date_format": "DD/MM/YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": ".",
+        "currency_code": "EUR", "currency_symbol": "€", "enabled": True, "sort_order": 10,
+    },
+    {
+        "code": "pl", "name": "Polski", "native_name": "Polski", "flag": "🇵🇱",
+        "rtl": False, "date_format": "DD.MM.YYYY", "time_format": "HH:mm",
+        "number_decimal": ",", "number_thousands": " ",
+        "currency_code": "PLN", "currency_symbol": "zł", "enabled": True, "sort_order": 11,
+    },
 ]
+
+# Keep backward-compat helper used by /translations response
+def _get_lang_list() -> List[Dict]:
+    """Return locales from DB if available, else fall back to _LOCALES_DATA."""
+    rows = get_locales_from_db()
+    if rows:
+        return [{"code": r["code"], "name": r["name"], "flag": r.get("flag",""), "rtl": r.get("rtl", False)} for r in rows if r.get("enabled", True)]
+    return [{"code": l["code"], "name": l["name"], "flag": l.get("flag",""), "rtl": l.get("rtl", False)} for l in _LOCALES_DATA]
+
+
+@router.get("/locales")
+def get_locales():
+    """Return all enabled locales with full metadata. DB-first, memory fallback."""
+    rows = get_locales_from_db()
+    if rows:
+        return {"locales": [r for r in rows if r.get("enabled", True)], "source": "db"}
+    return {"locales": _LOCALES_DATA, "source": "memory"}
+
+
+@router.get("/locales/{code}")
+def get_locale(code: str):
+    """Return a single locale by code."""
+    rows = get_locales_from_db()
+    data = rows if rows else _LOCALES_DATA
+    match = next((r for r in data if r["code"] == code), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Locale '{code}' not found")
+    return match
+
+
+@admin_router.post("/admin/seed-locales", status_code=200, dependencies=[Depends(_require_admin_key)])
+def seed_locales():
+    """Seed locale metadata from in-memory defaults into Supabase.
+    Safe to re-run — upserts on 'code'."""
+    errors = []
+    total = 0
+    try:
+        total = upsert_locales(_LOCALES_DATA)
+    except Exception as e:
+        errors.append(str(e))
+    return {
+        "status": "ok" if not errors else "partial",
+        "seeded": total,
+        "locales": [l["code"] for l in _LOCALES_DATA],
+        "errors": errors,
+    }
+
+
+@admin_router.patch("/admin/locales/{code}", status_code=200, dependencies=[Depends(_require_admin_key)])
+async def patch_locale(code: str, request: Request):
+    """Update any fields on a locale row. Body: partial locale object.
+    Allowed fields: name, native_name, flag, rtl, date_format, time_format,
+    number_decimal, number_thousands, currency_code, currency_symbol, enabled, sort_order"""
+    ALLOWED = {"name","native_name","flag","rtl","date_format","time_format",
+               "number_decimal","number_thousands","currency_code","currency_symbol","enabled","sort_order"}
+    body = await request.json()
+    patch = {k: v for k, v in body.items() if k in ALLOWED}
+    if not patch:
+        raise HTTPException(status_code=400, detail=f"No valid fields. Allowed: {ALLOWED}")
+    success = update_locale(code, patch)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update locale")
+    return {"updated": True, "code": code, "patch": patch}
 
 
 @router.get("/translations")
@@ -9513,8 +9639,8 @@ def get_all_translations():
     """Return all translations. DB-first, falls back to in-memory if DB empty."""
     db_data = get_translations_from_db()
     if db_data:
-        return {"translations": db_data, "languages": SUPPORTED_LANGUAGES, "source": "db"}
-    return {"translations": _TRANSLATIONS_DATA, "languages": SUPPORTED_LANGUAGES, "source": "memory"}
+        return {"translations": db_data, "languages": _get_lang_list(), "source": "db"}
+    return {"translations": _TRANSLATIONS_DATA, "languages": _get_lang_list(), "source": "memory"}
 
 
 @router.get("/translations/{lang_code}")
