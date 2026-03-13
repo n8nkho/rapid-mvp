@@ -110,6 +110,9 @@ from database import (
     upsert_sap_scope_items,
     get_process_hierarchy_from_db,
     upsert_process_hierarchy,
+    get_translations_from_db,
+    upsert_translations,
+    update_translation_key,
 )
 from autonomy import should_auto_execute, get_effective_config
 from scope_items import SCOPE_ITEMS, get_catalogue_text
@@ -9178,6 +9181,387 @@ def seed_reference_data(body: dict = Body(default={})):
         "release": release,
         "errors": errors,
     }
+
+
+# ─── Translations / Localisation ──────────────────────────────────────────────
+
+_TRANSLATIONS_DATA: Dict[str, Dict[str, str]] = {
+    "en": {
+        "nav_home": "Home", "nav_portfolio": "Portfolio", "nav_clients": "Clients",
+        "nav_engagements": "Engagements", "nav_capture": "Capture", "nav_sources": "Sources",
+        "nav_requirements": "Requirements", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Pending Decisions", "nav_audit": "Audit Trail",
+        "nav_patterns": "Patterns", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "System Health", "nav_client_portal": "Manage Portal Access",
+        "nav_admin": "ADMIN", "nav_sap_reference": "SAP Reference Data",
+        "nav_agent_simulation": "Agent Simulation", "nav_platform_backlog": "Platform Backlog",
+        "nav_testing_command_center": "Testing Command Center", "nav_user_management": "Manage Portal Access",
+        "save": "Save", "cancel": "Cancel", "delete": "Delete", "edit": "Edit", "create": "Create",
+        "search": "Search", "filter": "Filter", "export": "Export", "generate": "Generate",
+        "loading": "Loading\u2026", "saving": "Saving\u2026", "error": "Error", "success": "Success",
+        "confirm": "Confirm", "close": "Close", "back": "Back", "next": "Next", "submit": "Submit", "refresh": "Refresh",
+        "engagement": "Engagement", "engagements": "Engagements", "client": "Client",
+        "go_live": "Go-Live", "scope": "Scope", "overview": "Overview", "deliverables": "Deliverables",
+        "requirements": "Requirements", "requirement": "Requirement", "status": "Status",
+        "priority": "Priority", "process": "Process", "fitgap": "Fit/Gap Analysis",
+        "fit": "Fit", "gap": "Gap", "analyse_all": "Analyse All",
+        "pending_decisions": "Pending Decisions", "approve": "Approve", "reject": "Reject", "confidence": "Confidence",
+        "sign_off": "Sign Off", "milestone": "Milestone", "timeline": "Timeline",
+        "language": "Language", "select_language": "Select Language",
+        "setup": "SETUP", "discover": "DISCOVER", "analyse": "ANALYSE", "govern": "GOVERN",
+        "intelligence": "INTELLIGENCE", "collaborate": "COLLABORATE", "system": "SYSTEM", "agent_testers": "AGENT TESTERS",
+    },
+    "de": {
+        "nav_home": "Startseite", "nav_portfolio": "Portfolio", "nav_clients": "Kunden",
+        "nav_engagements": "Projekte", "nav_capture": "Erfassen", "nav_sources": "Quellen",
+        "nav_requirements": "Anforderungen", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Ausstehende Entscheidungen", "nav_audit": "Audit-Protokoll",
+        "nav_patterns": "Muster", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "Systemstatus", "nav_client_portal": "Portalzugang verwalten",
+        "nav_admin": "ADMIN", "nav_sap_reference": "SAP-Referenzdaten",
+        "nav_agent_simulation": "Agentensimulation", "nav_platform_backlog": "Plattform-Backlog",
+        "nav_testing_command_center": "Test-Kontrollzentrum", "nav_user_management": "Portalzugang verwalten",
+        "save": "Speichern", "cancel": "Abbrechen", "delete": "L\u00f6schen", "edit": "Bearbeiten", "create": "Erstellen",
+        "search": "Suchen", "filter": "Filtern", "export": "Exportieren", "generate": "Generieren",
+        "loading": "Wird geladen\u2026", "saving": "Wird gespeichert\u2026", "error": "Fehler", "success": "Erfolg",
+        "confirm": "Best\u00e4tigen", "close": "Schlie\u00dfen", "back": "Zur\u00fcck", "next": "Weiter", "submit": "Absenden", "refresh": "Aktualisieren",
+        "engagement": "Projekt", "engagements": "Projekte", "client": "Kunde",
+        "go_live": "Go-Live", "scope": "Umfang", "overview": "\u00dcbersicht", "deliverables": "Liefergegenstände",
+        "requirements": "Anforderungen", "requirement": "Anforderung", "status": "Status",
+        "priority": "Priorit\u00e4t", "process": "Prozess", "fitgap": "Fit/Gap-Analyse",
+        "fit": "Fit", "gap": "L\u00fccke", "analyse_all": "Alle analysieren",
+        "pending_decisions": "Ausstehende Entscheidungen", "approve": "Genehmigen", "reject": "Ablehnen", "confidence": "Konfidenz",
+        "sign_off": "Abzeichnen", "milestone": "Meilenstein", "timeline": "Zeitplan",
+        "language": "Sprache", "select_language": "Sprache ausw\u00e4hlen",
+        "setup": "EINRICHTUNG", "discover": "ENTDECKEN", "analyse": "ANALYSIEREN", "govern": "STEUERN",
+        "intelligence": "INTELLIGENZ", "collaborate": "ZUSAMMENARBEIT", "system": "SYSTEM", "agent_testers": "AGENTENTESTER",
+    },
+    "fr": {
+        "nav_home": "Accueil", "nav_portfolio": "Portefeuille", "nav_clients": "Clients",
+        "nav_engagements": "Missions", "nav_capture": "Capture", "nav_sources": "Sources",
+        "nav_requirements": "Exigences", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "D\u00e9cisions en attente", "nav_audit": "Journal d\u2019audit",
+        "nav_patterns": "Mod\u00e8les", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "Sant\u00e9 syst\u00e8me", "nav_client_portal": "G\u00e9rer l\u2019acc\u00e8s portail",
+        "nav_admin": "ADMIN", "nav_sap_reference": "Donn\u00e9es de r\u00e9f\u00e9rence SAP",
+        "nav_agent_simulation": "Simulation d\u2019agents", "nav_platform_backlog": "Backlog plateforme",
+        "nav_testing_command_center": "Centre de test", "nav_user_management": "G\u00e9rer l\u2019acc\u00e8s portail",
+        "save": "Enregistrer", "cancel": "Annuler", "delete": "Supprimer", "edit": "Modifier", "create": "Cr\u00e9er",
+        "search": "Rechercher", "filter": "Filtrer", "export": "Exporter", "generate": "G\u00e9n\u00e9rer",
+        "loading": "Chargement\u2026", "saving": "Enregistrement\u2026", "error": "Erreur", "success": "Succ\u00e8s",
+        "confirm": "Confirmer", "close": "Fermer", "back": "Retour", "next": "Suivant", "submit": "Soumettre", "refresh": "Actualiser",
+        "engagement": "Mission", "engagements": "Missions", "client": "Client",
+        "go_live": "Mise en production", "scope": "P\u00e9rim\u00e8tre", "overview": "Vue d\u2019ensemble", "deliverables": "Livrables",
+        "requirements": "Exigences", "requirement": "Exigence", "status": "Statut",
+        "priority": "Priorit\u00e9", "process": "Processus", "fitgap": "Analyse Fit/Gap",
+        "fit": "Fit", "gap": "Lacune", "analyse_all": "Analyser tout",
+        "pending_decisions": "D\u00e9cisions en attente", "approve": "Approuver", "reject": "Rejeter", "confidence": "Confiance",
+        "sign_off": "Validation", "milestone": "Jalon", "timeline": "Calendrier",
+        "language": "Langue", "select_language": "S\u00e9lectionner la langue",
+        "setup": "CONFIGURATION", "discover": "D\u00c9COUVERTE", "analyse": "ANALYSE", "govern": "GOUVERNANCE",
+        "intelligence": "INTELLIGENCE", "collaborate": "COLLABORATION", "system": "SYST\u00c8ME", "agent_testers": "TESTEURS",
+    },
+    "es": {
+        "nav_home": "Inicio", "nav_portfolio": "Portafolio", "nav_clients": "Clientes",
+        "nav_engagements": "Proyectos", "nav_capture": "Captura", "nav_sources": "Fuentes",
+        "nav_requirements": "Requisitos", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Decisiones pendientes", "nav_audit": "Registro de auditor\u00eda",
+        "nav_patterns": "Patrones", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "Salud del sistema", "nav_client_portal": "Gestionar acceso al portal",
+        "nav_admin": "ADMIN", "nav_sap_reference": "Datos de referencia SAP",
+        "nav_agent_simulation": "Simulaci\u00f3n de agentes", "nav_platform_backlog": "Backlog de plataforma",
+        "nav_testing_command_center": "Centro de pruebas", "nav_user_management": "Gestionar acceso al portal",
+        "save": "Guardar", "cancel": "Cancelar", "delete": "Eliminar", "edit": "Editar", "create": "Crear",
+        "search": "Buscar", "filter": "Filtrar", "export": "Exportar", "generate": "Generar",
+        "loading": "Cargando\u2026", "saving": "Guardando\u2026", "error": "Error", "success": "\u00c9xito",
+        "confirm": "Confirmar", "close": "Cerrar", "back": "Atr\u00e1s", "next": "Siguiente", "submit": "Enviar", "refresh": "Actualizar",
+        "engagement": "Proyecto", "engagements": "Proyectos", "client": "Cliente",
+        "go_live": "Salida a producci\u00f3n", "scope": "Alcance", "overview": "Resumen", "deliverables": "Entregables",
+        "requirements": "Requisitos", "requirement": "Requisito", "status": "Estado",
+        "priority": "Prioridad", "process": "Proceso", "fitgap": "An\u00e1lisis Fit/Gap",
+        "fit": "Fit", "gap": "Brecha", "analyse_all": "Analizar todo",
+        "pending_decisions": "Decisiones pendientes", "approve": "Aprobar", "reject": "Rechazar", "confidence": "Confianza",
+        "sign_off": "Firma", "milestone": "Hito", "timeline": "Cronograma",
+        "language": "Idioma", "select_language": "Seleccionar idioma",
+        "setup": "CONFIGURACI\u00d3N", "discover": "DESCUBRIR", "analyse": "ANALIZAR", "govern": "GOBERNAR",
+        "intelligence": "INTELIGENCIA", "collaborate": "COLABORAR", "system": "SISTEMA", "agent_testers": "PROBADORES",
+    },
+    "pt": {
+        "nav_home": "In\u00edcio", "nav_portfolio": "Portf\u00f3lio", "nav_clients": "Clientes",
+        "nav_engagements": "Projetos", "nav_capture": "Captura", "nav_sources": "Fontes",
+        "nav_requirements": "Requisitos", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Decis\u00f5es pendentes", "nav_audit": "Trilha de auditoria",
+        "nav_patterns": "Padr\u00f5es", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "Sa\u00fade do sistema", "nav_client_portal": "Gerenciar acesso ao portal",
+        "nav_admin": "ADMIN", "nav_sap_reference": "Dados de refer\u00eancia SAP",
+        "nav_agent_simulation": "Simula\u00e7\u00e3o de agentes", "nav_platform_backlog": "Backlog da plataforma",
+        "nav_testing_command_center": "Centro de testes", "nav_user_management": "Gerenciar acesso ao portal",
+        "save": "Salvar", "cancel": "Cancelar", "delete": "Excluir", "edit": "Editar", "create": "Criar",
+        "search": "Pesquisar", "filter": "Filtrar", "export": "Exportar", "generate": "Gerar",
+        "loading": "Carregando\u2026", "saving": "Salvando\u2026", "error": "Erro", "success": "Sucesso",
+        "confirm": "Confirmar", "close": "Fechar", "back": "Voltar", "next": "Pr\u00f3ximo", "submit": "Enviar", "refresh": "Atualizar",
+        "engagement": "Projeto", "engagements": "Projetos", "client": "Cliente",
+        "go_live": "Entrada em produ\u00e7\u00e3o", "scope": "Escopo", "overview": "Vis\u00e3o geral", "deliverables": "Entreg\u00e1veis",
+        "requirements": "Requisitos", "requirement": "Requisito", "status": "Status",
+        "priority": "Prioridade", "process": "Processo", "fitgap": "An\u00e1lise Fit/Gap",
+        "fit": "Fit", "gap": "Lacuna", "analyse_all": "Analisar tudo",
+        "pending_decisions": "Decis\u00f5es pendentes", "approve": "Aprovar", "reject": "Rejeitar", "confidence": "Confian\u00e7a",
+        "sign_off": "Assinar", "milestone": "Marco", "timeline": "Cronograma",
+        "language": "Idioma", "select_language": "Selecionar idioma",
+        "setup": "CONFIGURA\u00c7\u00c3O", "discover": "DESCOBRIR", "analyse": "ANALISAR", "govern": "GOVERNAR",
+        "intelligence": "INTELIG\u00caNCIA", "collaborate": "COLABORAR", "system": "SISTEMA", "agent_testers": "TESTADORES",
+    },
+    "ja": {
+        "nav_home": "\u30db\u30fc\u30e0", "nav_portfolio": "\u30dd\u30fc\u30c8\u30d5\u30a9\u30ea\u30aa", "nav_clients": "\u9867\u5ba2",
+        "nav_engagements": "\u30d7\u30ed\u30b8\u30a7\u30af\u30c8", "nav_capture": "\u30ad\u30e3\u30d7\u30c1\u30e3", "nav_sources": "\u30bd\u30fc\u30b9",
+        "nav_requirements": "\u8981\u4ef6", "nav_fitgap": "\u30d5\u30a3\u30c3\u30c8/\u30ae\u30e3\u30c3\u30d7", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "\u4fdd\u7559\u4e2d\u306e\u6c7a\u5b9a", "nav_audit": "\u76e3\u67fb\u8a3c\u8de1",
+        "nav_patterns": "\u30d1\u30bf\u30fc\u30f3", "nav_benchmarks": "\u30d9\u30f3\u30c1\u30de\u30fc\u30af",
+        "nav_system_health": "\u30b7\u30b9\u30c6\u30e0\u72b6\u614b", "nav_client_portal": "\u30dd\u30fc\u30bf\u30eb\u30a2\u30af\u30bb\u30b9\u7ba1\u7406",
+        "nav_admin": "\u7ba1\u7406", "nav_sap_reference": "SAP\u53c2\u7167\u30c7\u30fc\u30bf",
+        "nav_agent_simulation": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30b7\u30df\u30e5\u30ec\u30fc\u30b7\u30e7\u30f3",
+        "nav_platform_backlog": "\u30d7\u30e9\u30c3\u30c8\u30d5\u30a9\u30fc\u30e0\u30d0\u30c3\u30af\u30ed\u30b0",
+        "nav_testing_command_center": "\u30c6\u30b9\u30c8\u30b3\u30de\u30f3\u30c9\u30bb\u30f3\u30bf\u30fc",
+        "nav_user_management": "\u30dd\u30fc\u30bf\u30eb\u30a2\u30af\u30bb\u30b9\u7ba1\u7406",
+        "save": "\u4fdd\u5b58", "cancel": "\u30ad\u30e3\u30f3\u30bb\u30eb", "delete": "\u524a\u9664", "edit": "\u7de8\u96c6", "create": "\u4f5c\u6210",
+        "search": "\u691c\u7d22", "filter": "\u30d5\u30a3\u30eb\u30bf\u30fc", "export": "\u30a8\u30af\u30b9\u30dd\u30fc\u30c8", "generate": "\u751f\u6210",
+        "loading": "\u8aad\u307f\u8fbc\u307f\u4e2d\u2026", "saving": "\u4fdd\u5b58\u4e2d\u2026", "error": "\u30a8\u30e9\u30fc", "success": "\u6210\u529f",
+        "confirm": "\u78ba\u8a8d", "close": "\u9589\u3058\u308b", "back": "\u623b\u308b", "next": "\u6b21\u3078", "submit": "\u9001\u4fe1", "refresh": "\u66f4\u65b0",
+        "engagement": "\u30d7\u30ed\u30b8\u30a7\u30af\u30c8", "engagements": "\u30d7\u30ed\u30b8\u30a7\u30af\u30c8", "client": "\u9867\u5ba2",
+        "go_live": "\u672c\u756a\u7a3c\u50cd", "scope": "\u30b9\u30b3\u30fc\u30d7", "overview": "\u6982\u8981", "deliverables": "\u6210\u679c\u7269",
+        "requirements": "\u8981\u4ef6", "requirement": "\u8981\u4ef6", "status": "\u30b9\u30c6\u30fc\u30bf\u30b9",
+        "priority": "\u512a\u5148\u5ea6", "process": "\u30d7\u30ed\u30bb\u30b9", "fitgap": "\u30d5\u30a3\u30c3\u30c8/\u30ae\u30e3\u30c3\u30d7\u5206\u6790",
+        "fit": "\u30d5\u30a3\u30c3\u30c8", "gap": "\u30ae\u30e3\u30c3\u30d7", "analyse_all": "\u3059\u3079\u3066\u5206\u6790",
+        "pending_decisions": "\u4fdd\u7559\u4e2d\u306e\u6c7a\u5b9a", "approve": "\u627f\u8a8d", "reject": "\u5374\u4e0b", "confidence": "\u4fe1\u983c\u5ea6",
+        "sign_off": "\u627f\u8a8d", "milestone": "\u30de\u30a4\u30eb\u30b9\u30c8\u30fc\u30f3", "timeline": "\u30bf\u30a4\u30e0\u30e9\u30a4\u30f3",
+        "language": "\u8a00\u8a9e", "select_language": "\u8a00\u8a9e\u3092\u9078\u629e",
+        "setup": "\u30bb\u30c3\u30c8\u30a2\u30c3\u30d7", "discover": "\u30c7\u30a3\u30b9\u30ab\u30d0\u30fc", "analyse": "\u5206\u6790", "govern": "\u30ac\u30d0\u30ca\u30f3\u30b9",
+        "intelligence": "\u30a4\u30f3\u30c6\u30ea\u30b8\u30a7\u30f3\u30b9", "collaborate": "\u30b3\u30e9\u30dc\u30ec\u30fc\u30b7\u30e7\u30f3", "system": "\u30b7\u30b9\u30c6\u30e0", "agent_testers": "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30c6\u30b9\u30bf\u30fc",
+    },
+    "zh-CN": {
+        "nav_home": "\u9996\u9875", "nav_portfolio": "\u9879\u76ee\u7ec4\u5408", "nav_clients": "\u5ba2\u6237",
+        "nav_engagements": "\u9879\u76ee", "nav_capture": "\u91c7\u96c6", "nav_sources": "\u6765\u6e90",
+        "nav_requirements": "\u9700\u6c42", "nav_fitgap": "\u9002\u914d/\u5dee\u8ddd", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "\u5f85\u5904\u7406\u51b3\u7b56", "nav_audit": "\u5ba1\u8ba1\u8ddf\u8e2a",
+        "nav_patterns": "\u6a21\u5f0f", "nav_benchmarks": "\u57fa\u51c6",
+        "nav_system_health": "\u7cfb\u7edf\u5065\u5eb7", "nav_client_portal": "\u7ba1\u7406\u95e8\u6237\u8bbf\u95ee",
+        "nav_admin": "\u7ba1\u7406\u5458", "nav_sap_reference": "SAP\u53c2\u8003\u6570\u636e",
+        "nav_agent_simulation": "\u4ee3\u7406\u6a21\u62df", "nav_platform_backlog": "\u5e73\u53f0\u79ef\u538b",
+        "nav_testing_command_center": "\u6d4b\u8bd5\u6307\u6325\u4e2d\u5fc3", "nav_user_management": "\u7ba1\u7406\u95e8\u6237\u8bbf\u95ee",
+        "save": "\u4fdd\u5b58", "cancel": "\u53d6\u6d88", "delete": "\u5220\u9664", "edit": "\u7f16\u8f91", "create": "\u521b\u5efa",
+        "search": "\u641c\u7d22", "filter": "\u7b5b\u9009", "export": "\u5bfc\u51fa", "generate": "\u751f\u6210",
+        "loading": "\u52a0\u8f7d\u4e2d\u2026", "saving": "\u4fdd\u5b58\u4e2d\u2026", "error": "\u9519\u8bef", "success": "\u6210\u529f",
+        "confirm": "\u786e\u8ba4", "close": "\u5173\u95ed", "back": "\u8fd4\u56de", "next": "\u4e0b\u4e00\u6b65", "submit": "\u63d0\u4ea4", "refresh": "\u5237\u65b0",
+        "engagement": "\u9879\u76ee", "engagements": "\u9879\u76ee", "client": "\u5ba2\u6237",
+        "go_live": "\u4e0a\u7ebf", "scope": "\u8303\u56f4", "overview": "\u6982\u89c8", "deliverables": "\u4ea4\u4ed8\u7269",
+        "requirements": "\u9700\u6c42", "requirement": "\u9700\u6c42", "status": "\u72b6\u6001",
+        "priority": "\u4f18\u5148\u7ea7", "process": "\u6d41\u7a0b", "fitgap": "\u9002\u914d/\u5dee\u8ddd\u5206\u6790",
+        "fit": "\u9002\u914d", "gap": "\u5dee\u8ddd", "analyse_all": "\u5168\u90e8\u5206\u6790",
+        "pending_decisions": "\u5f85\u5904\u7406\u51b3\u7b56", "approve": "\u6279\u51c6", "reject": "\u62d2\u7edd", "confidence": "\u7f6e\u4fe1\u5ea6",
+        "sign_off": "\u7b7e\u7f72", "milestone": "\u91cc\u7a0b\u7891", "timeline": "\u65f6\u95f4\u7ebf",
+        "language": "\u8bed\u8a00", "select_language": "\u9009\u62e9\u8bed\u8a00",
+        "setup": "\u8bbe\u7f6e", "discover": "\u53d1\u73b0", "analyse": "\u5206\u6790", "govern": "\u6cbb\u7406",
+        "intelligence": "\u667a\u80fd", "collaborate": "\u534f\u4f5c", "system": "\u7cfb\u7edf", "agent_testers": "\u4ee3\u7406\u6d4b\u8bd5",
+    },
+    "ar": {
+        "nav_home": "\u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629", "nav_portfolio": "\u0627\u0644\u0645\u062d\u0641\u0638\u0629", "nav_clients": "\u0627\u0644\u0639\u0645\u0644\u0627\u0621",
+        "nav_engagements": "\u0627\u0644\u0645\u0634\u0627\u0631\u064a\u0639", "nav_capture": "\u0627\u0644\u062a\u0642\u0627\u0637", "nav_sources": "\u0627\u0644\u0645\u0635\u0627\u062f\u0631",
+        "nav_requirements": "\u0627\u0644\u0645\u062a\u0637\u0644\u0628\u0627\u062a", "nav_fitgap": "\u0627\u0644\u0645\u0644\u0627\u0621\u0645\u0629/\u0627\u0644\u0641\u062c\u0648\u0629", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "\u0627\u0644\u0642\u0631\u0627\u0631\u0627\u062a \u0627\u0644\u0645\u0639\u0644\u0642\u0629", "nav_audit": "\u0633\u062c\u0644 \u0627\u0644\u0645\u0631\u0627\u062c\u0639\u0629",
+        "nav_patterns": "\u0627\u0644\u0623\u0646\u0645\u0627\u0637", "nav_benchmarks": "\u0627\u0644\u0645\u0639\u0627\u064a\u064a\u0631",
+        "nav_system_health": "\u0635\u062d\u0629 \u0627\u0644\u0646\u0638\u0627\u0645", "nav_client_portal": "\u0625\u062f\u0627\u0631\u0629 \u0648\u0635\u0648\u0644 \u0627\u0644\u0628\u0648\u0627\u0628\u0629",
+        "nav_admin": "\u0627\u0644\u0625\u062f\u0627\u0631\u0629", "nav_sap_reference": "\u0628\u064a\u0627\u0646\u0627\u062a \u0645\u0631\u062c\u0639\u064a\u0629 SAP",
+        "nav_agent_simulation": "\u0645\u062d\u0627\u0643\u0627\u0629 \u0627\u0644\u0648\u0643\u064a\u0644", "nav_platform_backlog": "\u0645\u062a\u0623\u062e\u0631\u0627\u062a \u0627\u0644\u0645\u0646\u0635\u0629",
+        "nav_testing_command_center": "\u0645\u0631\u0643\u0632 \u0642\u064a\u0627\u062f\u0629 \u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631",
+        "nav_user_management": "\u0625\u062f\u0627\u0631\u0629 \u0648\u0635\u0648\u0644 \u0627\u0644\u0628\u0648\u0627\u0628\u0629",
+        "save": "\u062d\u0641\u0638", "cancel": "\u0625\u0644\u063a\u0627\u0621", "delete": "\u062d\u0630\u0641", "edit": "\u062a\u0639\u062f\u064a\u0644", "create": "\u0625\u0646\u0634\u0627\u0621",
+        "search": "\u0628\u062d\u062b", "filter": "\u062a\u0635\u0641\u064a\u0629", "export": "\u062a\u0635\u062f\u064a\u0631", "generate": "\u062a\u0648\u0644\u064a\u062f",
+        "loading": "\u062c\u0627\u0631\u064d \u0627\u0644\u062a\u062d\u0645\u064a\u0644\u2026", "saving": "\u062c\u0627\u0631\u064d \u0627\u0644\u062d\u0641\u0638\u2026", "error": "\u062e\u0637\u0623", "success": "\u0646\u062c\u0627\u062d",
+        "confirm": "\u062a\u0623\u0643\u064a\u062f", "close": "\u0625\u063a\u0644\u0627\u0642", "back": "\u0631\u062c\u0648\u0639", "next": "\u0627\u0644\u062a\u0627\u0644\u064a", "submit": "\u0625\u0631\u0633\u0627\u0644", "refresh": "\u062a\u062d\u062f\u064a\u062b",
+        "engagement": "\u0645\u0634\u0631\u0648\u0639", "engagements": "\u0645\u0634\u0627\u0631\u064a\u0639", "client": "\u0639\u0645\u064a\u0644",
+        "go_live": "\u0627\u0644\u0625\u0637\u0644\u0627\u0642", "scope": "\u0627\u0644\u0646\u0637\u0627\u0642", "overview": "\u0646\u0638\u0631\u0629 \u0639\u0627\u0645\u0629", "deliverables": "\u0627\u0644\u0645\u062e\u0631\u062c\u0627\u062a",
+        "requirements": "\u0627\u0644\u0645\u062a\u0637\u0644\u0628\u0627\u062a", "requirement": "\u0645\u062a\u0637\u0644\u0628", "status": "\u0627\u0644\u062d\u0627\u0644\u0629",
+        "priority": "\u0627\u0644\u0623\u0648\u0644\u0648\u064a\u0629", "process": "\u0627\u0644\u0639\u0645\u0644\u064a\u0629", "fitgap": "\u062a\u062d\u0644\u064a\u0644 \u0627\u0644\u0645\u0644\u0627\u0621\u0645\u0629/\u0627\u0644\u0641\u062c\u0648\u0629",
+        "fit": "\u0645\u0644\u0627\u0621\u0645\u0629", "gap": "\u0641\u062c\u0648\u0629", "analyse_all": "\u062a\u062d\u0644\u064a\u0644 \u0627\u0644\u0643\u0644",
+        "pending_decisions": "\u0627\u0644\u0642\u0631\u0627\u0631\u0627\u062a \u0627\u0644\u0645\u0639\u0644\u0642\u0629", "approve": "\u0645\u0648\u0627\u0641\u0642\u0629", "reject": "\u0631\u0641\u0636", "confidence": "\u0627\u0644\u062b\u0642\u0629",
+        "sign_off": "\u0627\u0644\u062a\u0648\u0642\u064a\u0639", "milestone": "\u0645\u0639\u0644\u0645", "timeline": "\u0627\u0644\u062c\u062f\u0648\u0644 \u0627\u0644\u0632\u0645\u0646\u064a",
+        "language": "\u0627\u0644\u0644\u063a\u0629", "select_language": "\u0627\u062e\u062a\u0631 \u0627\u0644\u0644\u063a\u0629",
+        "setup": "\u0627\u0644\u0625\u0639\u062f\u0627\u062f", "discover": "\u0627\u0644\u0627\u0633\u062a\u0643\u0634\u0627\u0641", "analyse": "\u0627\u0644\u062a\u062d\u0644\u064a\u0644", "govern": "\u0627\u0644\u062d\u0648\u0643\u0645\u0629",
+        "intelligence": "\u0627\u0644\u0630\u0643\u0627\u0621", "collaborate": "\u0627\u0644\u062a\u0639\u0627\u0648\u0646", "system": "\u0627\u0644\u0646\u0638\u0627\u0645", "agent_testers": "\u0627\u062e\u062a\u0628\u0627\u0631 \u0627\u0644\u0648\u0643\u0644\u0627\u0621",
+    },
+    "hi": {
+        "nav_home": "\u0939\u094b\u092e", "nav_portfolio": "\u092a\u094b\u0930\u094d\u091f\u092b\u094b\u0932\u093f\u092f\u094b", "nav_clients": "\u0917\u094d\u0930\u093e\u0939\u0915",
+        "nav_engagements": "\u092a\u0930\u093f\u092f\u094b\u091c\u0928\u093e\u090f\u0902", "nav_capture": "\u0915\u0948\u092a\u094d\u091a\u0930", "nav_sources": "\u0938\u094d\u0930\u094b\u0924",
+        "nav_requirements": "\u0906\u0935\u0936\u094d\u092f\u0915\u0924\u093e\u090f\u0902", "nav_fitgap": "\u092b\u093f\u091f/\u0917\u0948\u092a", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "\u0932\u0902\u092c\u093f\u0924 \u0928\u093f\u0930\u094d\u0923\u092f", "nav_audit": "\u0911\u0921\u093f\u091f \u091f\u094d\u0930\u0947\u0932",
+        "nav_patterns": "\u092a\u0948\u091f\u0930\u094d\u0928", "nav_benchmarks": "\u092c\u0947\u0902\u091a\u092e\u093e\u0930\u094d\u0915",
+        "nav_system_health": "\u0938\u093f\u0938\u094d\u091f\u092e \u0938\u094d\u0935\u093e\u0938\u094d\u0925\u094d\u092f", "nav_client_portal": "\u092a\u094b\u0930\u094d\u091f\u0932 \u090f\u0915\u094d\u0938\u0947\u0938 \u092a\u094d\u0930\u092c\u0902\u0927\u093f\u0924 \u0915\u0930\u0947\u0902",
+        "nav_admin": "\u090f\u0921\u092e\u093f\u0928", "nav_sap_reference": "SAP \u0938\u0902\u0926\u0930\u094d\u092d \u0921\u0947\u091f\u093e",
+        "nav_agent_simulation": "\u090f\u091c\u0947\u0902\u091f \u0938\u093f\u092e\u0941\u0932\u0947\u0936\u0928", "nav_platform_backlog": "\u092a\u094d\u0932\u0947\u091f\u092b\u0949\u0930\u094d\u092e \u092c\u0948\u0915\u0932\u0949\u0917",
+        "nav_testing_command_center": "\u091f\u0947\u0938\u094d\u091f\u093f\u0902\u0917 \u0915\u092e\u093e\u0902\u0921 \u0938\u0947\u0902\u091f\u0930",
+        "nav_user_management": "\u092a\u094b\u0930\u094d\u091f\u0932 \u090f\u0915\u094d\u0938\u0947\u0938 \u092a\u094d\u0930\u092c\u0902\u0927\u093f\u0924 \u0915\u0930\u0947\u0902",
+        "save": "\u0938\u0939\u0947\u091c\u0947\u0902", "cancel": "\u0930\u0926\u094d\u0926 \u0915\u0930\u0947\u0902", "delete": "\u0939\u091f\u093e\u090f\u0902", "edit": "\u0938\u0902\u092a\u093e\u0926\u093f\u0924 \u0915\u0930\u0947\u0902", "create": "\u092c\u0928\u093e\u090f\u0902",
+        "search": "\u0916\u094b\u091c\u0947\u0902", "filter": "\u092b\u093c\u093f\u0932\u094d\u091f\u0930", "export": "\u0928\u093f\u0930\u094d\u092f\u093e\u0924", "generate": "\u0909\u0924\u094d\u092a\u0928\u094d\u0928 \u0915\u0930\u0947\u0902",
+        "loading": "\u0932\u094b\u0921 \u0939\u094b \u0930\u0939\u093e \u0939\u0948\u2026", "saving": "\u0938\u0939\u0947\u091c\u093e \u091c\u093e \u0930\u0939\u093e \u0939\u0948\u2026", "error": "\u0924\u094d\u0930\u0941\u091f\u093f", "success": "\u0938\u092b\u0932\u0924\u093e",
+        "confirm": "\u092a\u0941\u0937\u094d\u091f\u093f \u0915\u0930\u0947\u0902", "close": "\u092c\u0902\u0926 \u0915\u0930\u0947\u0902", "back": "\u0935\u093e\u092a\u0938", "next": "\u0905\u0917\u0932\u093e", "submit": "\u0938\u092c\u092e\u093f\u091f", "refresh": "\u0930\u093f\u092b\u094d\u0930\u0947\u0936",
+        "engagement": "\u092a\u0930\u093f\u092f\u094b\u091c\u0928\u093e", "engagements": "\u092a\u0930\u093f\u092f\u094b\u091c\u0928\u093e\u090f\u0902", "client": "\u0917\u094d\u0930\u093e\u0939\u0915",
+        "go_live": "\u0917\u094b-\u0932\u093e\u0907\u0935", "scope": "\u0926\u093e\u092f\u0930\u093e", "overview": "\u0905\u0935\u0932\u094b\u0915\u0928", "deliverables": "\u0921\u093f\u0932\u093f\u0935\u0930\u0947\u092c\u0932\u094d\u0938",
+        "requirements": "\u0906\u0935\u0936\u094d\u092f\u0915\u0924\u093e\u090f\u0902", "requirement": "\u0906\u0935\u0936\u094d\u092f\u0915\u0924\u093e", "status": "\u0938\u094d\u0925\u093f\u0924\u093f",
+        "priority": "\u092a\u094d\u0930\u093e\u0925\u092e\u093f\u0915\u0924\u093e", "process": "\u092a\u094d\u0930\u0915\u094d\u0930\u093f\u092f\u093e", "fitgap": "\u092b\u093f\u091f/\u0917\u0948\u092a \u0935\u093f\u0936\u094d\u0932\u0947\u0937\u0923",
+        "fit": "\u092b\u093f\u091f", "gap": "\u0917\u0948\u092a", "analyse_all": "\u0938\u092c \u0935\u093f\u0936\u094d\u0932\u0947\u0937\u0923 \u0915\u0930\u0947\u0902",
+        "pending_decisions": "\u0932\u0902\u092c\u093f\u0924 \u0928\u093f\u0930\u094d\u0923\u092f", "approve": "\u0905\u0928\u0941\u092e\u094b\u0926\u093f\u0924 \u0915\u0930\u0947\u0902", "reject": "\u0905\u0938\u094d\u0935\u0940\u0915\u093e\u0930 \u0915\u0930\u0947\u0902", "confidence": "\u0935\u093f\u0936\u094d\u0935\u093e\u0938",
+        "sign_off": "\u0938\u093e\u0907\u0928 \u0911\u092b", "milestone": "\u092e\u0940\u0932 \u0915\u093e \u092a\u0924\u094d\u0925\u0930", "timeline": "\u0938\u092e\u092f\u0930\u0947\u0916\u093e",
+        "language": "\u092d\u093e\u0937\u093e", "select_language": "\u092d\u093e\u0937\u093e \u091a\u0941\u0928\u0947\u0902",
+        "setup": "\u0938\u0947\u091f\u0905\u092a", "discover": "\u0916\u094b\u091c\u0947\u0902", "analyse": "\u0935\u093f\u0936\u094d\u0932\u0947\u0937\u0923", "govern": "\u0936\u093e\u0938\u0928",
+        "intelligence": "\u092c\u0941\u0926\u094d\u0927\u093f\u092e\u0924\u094d\u0924\u093e", "collaborate": "\u0938\u0939\u092f\u094b\u0917", "system": "\u0938\u093f\u0938\u094d\u091f\u092e", "agent_testers": "\u090f\u091c\u0947\u0902\u091f \u092a\u0930\u0940\u0915\u094d\u0937\u0915",
+    },
+    "nl": {
+        "nav_home": "Home", "nav_portfolio": "Portfolio", "nav_clients": "Klanten",
+        "nav_engagements": "Projecten", "nav_capture": "Vastleggen", "nav_sources": "Bronnen",
+        "nav_requirements": "Vereisten", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Openstaande beslissingen", "nav_audit": "Auditspoor",
+        "nav_patterns": "Patronen", "nav_benchmarks": "Benchmarks",
+        "nav_system_health": "Systeemgezondheid", "nav_client_portal": "Portaaltoegang beheren",
+        "nav_admin": "BEHEER", "nav_sap_reference": "SAP-referentiegegevens",
+        "nav_agent_simulation": "Agentsimulatie", "nav_platform_backlog": "Platform-backlog",
+        "nav_testing_command_center": "Testcommandocentrum", "nav_user_management": "Portaaltoegang beheren",
+        "save": "Opslaan", "cancel": "Annuleren", "delete": "Verwijderen", "edit": "Bewerken", "create": "Aanmaken",
+        "search": "Zoeken", "filter": "Filteren", "export": "Exporteren", "generate": "Genereren",
+        "loading": "Laden\u2026", "saving": "Opslaan\u2026", "error": "Fout", "success": "Succes",
+        "confirm": "Bevestigen", "close": "Sluiten", "back": "Terug", "next": "Volgende", "submit": "Indienen", "refresh": "Vernieuwen",
+        "engagement": "Project", "engagements": "Projecten", "client": "Klant",
+        "go_live": "Go-live", "scope": "Scope", "overview": "Overzicht", "deliverables": "Deliverables",
+        "requirements": "Vereisten", "requirement": "Vereiste", "status": "Status",
+        "priority": "Prioriteit", "process": "Proces", "fitgap": "Fit/Gap-analyse",
+        "fit": "Fit", "gap": "Kloof", "analyse_all": "Alles analyseren",
+        "pending_decisions": "Openstaande beslissingen", "approve": "Goedkeuren", "reject": "Afwijzen", "confidence": "Betrouwbaarheid",
+        "sign_off": "Aftekenen", "milestone": "Mijlpaal", "timeline": "Tijdlijn",
+        "language": "Taal", "select_language": "Taal selecteren",
+        "setup": "INSTELLING", "discover": "ONTDEKKEN", "analyse": "ANALYSEREN", "govern": "BEHEREN",
+        "intelligence": "INTELLIGENTIE", "collaborate": "SAMENWERKEN", "system": "SYSTEEM", "agent_testers": "AGENTTESTS",
+    },
+    "it": {
+        "nav_home": "Home", "nav_portfolio": "Portfolio", "nav_clients": "Clienti",
+        "nav_engagements": "Progetti", "nav_capture": "Acquisizione", "nav_sources": "Fonti",
+        "nav_requirements": "Requisiti", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Decisioni in sospeso", "nav_audit": "Registro audit",
+        "nav_patterns": "Modelli", "nav_benchmarks": "Benchmark",
+        "nav_system_health": "Salute sistema", "nav_client_portal": "Gestisci accesso portale",
+        "nav_admin": "ADMIN", "nav_sap_reference": "Dati di riferimento SAP",
+        "nav_agent_simulation": "Simulazione agenti", "nav_platform_backlog": "Backlog piattaforma",
+        "nav_testing_command_center": "Centro di test", "nav_user_management": "Gestisci accesso portale",
+        "save": "Salva", "cancel": "Annulla", "delete": "Elimina", "edit": "Modifica", "create": "Crea",
+        "search": "Cerca", "filter": "Filtra", "export": "Esporta", "generate": "Genera",
+        "loading": "Caricamento\u2026", "saving": "Salvataggio\u2026", "error": "Errore", "success": "Successo",
+        "confirm": "Conferma", "close": "Chiudi", "back": "Indietro", "next": "Avanti", "submit": "Invia", "refresh": "Aggiorna",
+        "engagement": "Progetto", "engagements": "Progetti", "client": "Cliente",
+        "go_live": "Go-live", "scope": "Ambito", "overview": "Panoramica", "deliverables": "Deliverable",
+        "requirements": "Requisiti", "requirement": "Requisito", "status": "Stato",
+        "priority": "Priorit\u00e0", "process": "Processo", "fitgap": "Analisi Fit/Gap",
+        "fit": "Fit", "gap": "Gap", "analyse_all": "Analizza tutto",
+        "pending_decisions": "Decisioni in sospeso", "approve": "Approva", "reject": "Rifiuta", "confidence": "Confidenza",
+        "sign_off": "Approvazione", "milestone": "Pietra miliare", "timeline": "Cronologia",
+        "language": "Lingua", "select_language": "Seleziona lingua",
+        "setup": "CONFIGURAZIONE", "discover": "SCOPERTA", "analyse": "ANALISI", "govern": "GOVERNANCE",
+        "intelligence": "INTELLIGENZA", "collaborate": "COLLABORAZIONE", "system": "SISTEMA", "agent_testers": "TESTER",
+    },
+    "pl": {
+        "nav_home": "Strona g\u0142\u00f3wna", "nav_portfolio": "Portfolio", "nav_clients": "Klienci",
+        "nav_engagements": "Projekty", "nav_capture": "Przechwytywanie", "nav_sources": "\u0179r\u00f3d\u0142a",
+        "nav_requirements": "Wymagania", "nav_fitgap": "Fit/Gap", "nav_ricefw": "RICEFW",
+        "nav_pending_decisions": "Oczekuj\u0105ce decyzje", "nav_audit": "Dziennik audytu",
+        "nav_patterns": "Wzorce", "nav_benchmarks": "Benchmarki",
+        "nav_system_health": "Zdrowie systemu", "nav_client_portal": "Zarz\u0105dzaj dost\u0119pem do portalu",
+        "nav_admin": "ADMIN", "nav_sap_reference": "Dane referencyjne SAP",
+        "nav_agent_simulation": "Symulacja agent\u00f3w", "nav_platform_backlog": "Zaleg\u0142o\u015bci platformy",
+        "nav_testing_command_center": "Centrum testowania", "nav_user_management": "Zarz\u0105dzaj dost\u0119pem do portalu",
+        "save": "Zapisz", "cancel": "Anuluj", "delete": "Usu\u0144", "edit": "Edytuj", "create": "Utw\u00f3rz",
+        "search": "Szukaj", "filter": "Filtruj", "export": "Eksportuj", "generate": "Generuj",
+        "loading": "\u0141adowanie\u2026", "saving": "Zapisywanie\u2026", "error": "B\u0142\u0105d", "success": "Sukces",
+        "confirm": "Potwierd\u017a", "close": "Zamknij", "back": "Wstecz", "next": "Dalej", "submit": "Prze\u015blij", "refresh": "Od\u015bwie\u017c",
+        "engagement": "Projekt", "engagements": "Projekty", "client": "Klient",
+        "go_live": "Uruchomienie", "scope": "Zakres", "overview": "Przegl\u0105d", "deliverables": "Produkty",
+        "requirements": "Wymagania", "requirement": "Wymaganie", "status": "Status",
+        "priority": "Priorytet", "process": "Proces", "fitgap": "Analiza Fit/Gap",
+        "fit": "Dopasowanie", "gap": "Luka", "analyse_all": "Analizuj wszystko",
+        "pending_decisions": "Oczekuj\u0105ce decyzje", "approve": "Zatwierd\u017a", "reject": "Odrzu\u0107", "confidence": "Pewno\u015b\u0107",
+        "sign_off": "Zatwierdzenie", "milestone": "Kamie\u0144 milowy", "timeline": "Harmonogram",
+        "language": "J\u0119zyk", "select_language": "Wybierz j\u0119zyk",
+        "setup": "KONFIGURACJA", "discover": "ODKRYWANIE", "analyse": "ANALIZA", "govern": "ZARZ\u0104DZANIE",
+        "intelligence": "INTELIGENCJA", "collaborate": "WS\u00d3\u0141PRACA", "system": "SYSTEM", "agent_testers": "TESTERZY",
+    },
+}
+
+SUPPORTED_LANGUAGES = [
+    {"code": "en", "name": "English", "flag": "🇬🇧"},
+    {"code": "de", "name": "Deutsch", "flag": "🇩🇪"},
+    {"code": "fr", "name": "Français", "flag": "🇫🇷"},
+    {"code": "es", "name": "Español", "flag": "🇪🇸"},
+    {"code": "pt", "name": "Português", "flag": "🇧🇷"},
+    {"code": "ja", "name": "日本語", "flag": "🇯🇵"},
+    {"code": "zh-CN", "name": "中文", "flag": "🇨🇳"},
+    {"code": "ar", "name": "العربية", "flag": "🇸🇦", "rtl": True},
+    {"code": "hi", "name": "हिन्दी", "flag": "🇮🇳"},
+    {"code": "nl", "name": "Nederlands", "flag": "🇳🇱"},
+    {"code": "it", "name": "Italiano", "flag": "🇮🇹"},
+    {"code": "pl", "name": "Polski", "flag": "🇵🇱"},
+]
+
+
+@router.get("/translations")
+def get_all_translations():
+    """Return all translations. DB-first, falls back to in-memory if DB empty."""
+    db_data = get_translations_from_db()
+    if db_data:
+        return {"translations": db_data, "languages": SUPPORTED_LANGUAGES, "source": "db"}
+    return {"translations": _TRANSLATIONS_DATA, "languages": SUPPORTED_LANGUAGES, "source": "memory"}
+
+
+@router.get("/translations/{lang_code}")
+def get_translations_by_lang(lang_code: str):
+    """Return translations for a single language code."""
+    db_data = get_translations_from_db()
+    data = db_data if db_data else _TRANSLATIONS_DATA
+    if lang_code not in data:
+        raise HTTPException(status_code=404, detail=f"Language '{lang_code}' not found")
+    return {"lang_code": lang_code, "translations": data[lang_code], "source": "db" if db_data else "memory"}
+
+
+@admin_router.post("/admin/seed-translations", status_code=200, dependencies=[Depends(_require_admin_key)])
+def seed_translations():
+    """Seed all translations from in-memory defaults into Supabase.
+    Safe to re-run — uses upsert on (lang_code, translation_key)."""
+    rows = []
+    for lang_code, keys in _TRANSLATIONS_DATA.items():
+        for k, v in keys.items():
+            rows.append({"lang_code": lang_code, "translation_key": k, "translation_value": v})
+    errors = []
+    total = 0
+    for i in range(0, len(rows), 100):
+        try:
+            total += upsert_translations(rows[i:i+100])
+        except Exception as e:
+            errors.append(f"batch {i//100}: {e}")
+    return {
+        "status": "ok" if not errors else "partial",
+        "seeded": total,
+        "languages": list(_TRANSLATIONS_DATA.keys()),
+        "keys_per_language": len(next(iter(_TRANSLATIONS_DATA.values()))),
+        "errors": errors,
+    }
+
+
+@admin_router.patch("/admin/translations/{lang_code}/{key}", status_code=200, dependencies=[Depends(_require_admin_key)])
+async def patch_translation_key(lang_code: str, key: str, request: Request):
+    """Update a single translation value. Body: {"value": "new text"}"""
+    body = await request.json()
+    value = body.get("value", "")
+    if not value:
+        raise HTTPException(status_code=400, detail="Body must contain 'value'")
+    success = update_translation_key(lang_code, key, value)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update translation")
+    return {"updated": True, "lang_code": lang_code, "key": key, "value": value}
 
 
 @admin_router.post("/admin/migrate", status_code=200, dependencies=[Depends(_require_admin_key)])

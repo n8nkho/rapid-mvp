@@ -1473,3 +1473,44 @@ def upsert_process_hierarchy(rows: list) -> int:
         return 0
     result = supabase.table("process_hierarchy").upsert(rows, on_conflict="lob,level2,level3").execute()
     return len(result.data or [])
+
+
+def get_translations_from_db() -> dict:
+    """Fetch all translations from DB as {lang_code: {key: value}}.
+    Returns empty dict if table missing or empty."""
+    try:
+        result = supabase.table("translations").select(
+            "lang_code,translation_key,translation_value"
+        ).execute()
+        out: dict = {}
+        for row in (result.data or []):
+            lc = row["lang_code"]
+            if lc not in out:
+                out[lc] = {}
+            out[lc][row["translation_key"]] = row["translation_value"]
+        return out
+    except Exception:
+        return {}
+
+
+def upsert_translations(rows: list) -> int:
+    """Upsert translation rows [{lang_code, translation_key, translation_value}].
+    Returns count inserted/updated."""
+    if not rows:
+        return 0
+    result = supabase.table("translations").upsert(
+        rows, on_conflict="lang_code,translation_key"
+    ).execute()
+    return len(result.data or [])
+
+
+def update_translation_key(lang_code: str, key: str, value: str) -> bool:
+    """Update a single translation key for a language. Returns True on success."""
+    try:
+        supabase.table("translations").upsert(
+            {"lang_code": lang_code, "translation_key": key, "translation_value": value},
+            on_conflict="lang_code,translation_key"
+        ).execute()
+        return True
+    except Exception:
+        return False
